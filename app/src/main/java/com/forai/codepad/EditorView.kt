@@ -374,7 +374,7 @@ class EditorView @JvmOverloads constructor(
         val t = text ?: return
         val n = t.length
         if (charBuf.size < n) charBuf = CharArray(n + n / 2 + 16)
-        t.getChars(0, n, charBuf, 0)
+        android.text.TextUtils.getChars(t, 0, n, charBuf, 0)
         var cnt = 1
         for (i in 0 until n) if (charBuf[i] == '\n') cnt++
         val arr = IntArray(cnt)
