@@ -5,6 +5,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.result.contract.ActivityResultContract
 import org.json.JSONArray
@@ -29,6 +30,7 @@ class Doc(var uri: Uri?, var name: String, val id: String = UUID.randomUUID().to
     var charset: String = "UTF-8"
     var bom: Boolean = false
     var langOverride: Lang? = null
+    var diskTime: Long = 0L
     val undo = UndoManager()
 
     val lang: Lang get() = langOverride ?: Langs.forFileName(name)
@@ -123,6 +125,17 @@ object FileIO {
         out.use {
             it.write(bytes)
             it.flush()
+        }
+    }
+
+    /** Last-modified time of a document URI, or 0 if the provider doesn't say. */
+    fun lastModified(cr: ContentResolver, uri: Uri): Long {
+        return try {
+            cr.query(uri, arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        } catch (e: Exception) {
+            0L
         }
     }
 

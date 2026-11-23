@@ -4,16 +4,19 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputFilter
 import android.text.Layout
 import android.text.Selection
 import android.text.Spanned
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
@@ -23,6 +26,9 @@ import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.widget.OverScroller
 import androidx.appcompat.widget.AppCompatEditText
 import java.util.concurrent.Executors
@@ -40,6 +46,8 @@ class EditorView @JvmOverloads constructor(
     companion object {
         private val worker = Executors.newSingleThreadExecutor()
         const val MAX_HIGHLIGHT = 2_000_000
+        private const val BR_SCAN = 30_000
+        private val EMPTY_F = FloatArray(0)
     }
 
     private class SyntaxSpan(color: Int) : ForegroundColorSpan(color)
@@ -70,6 +78,30 @@ class EditorView @JvmOverloads constructor(
     var autoIndent: Boolean = true
     var tabSize: Int = 4
     var useSpaces: Boolean = true
+    var autoClose: Boolean = true
+
+    var bracketMatch: Boolean = true
+        set(value) {
+            field = value
+            updateBracketMatch()
+            invalidate()
+        }
+
+    var showGuides: Boolean = true
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Auto-close rules (trigger -> completion). */
+    var pairs: List<PairDef> = emptyList()
+        set(value) {
+            field = value
+            pairsSorted = value.sortedByDescending { it.open.length }
+            rebuildBrackets()
+            updateBracketMatch()
+            invalidate()
+        }
 
     var fontSp: Float = 14f
         private set
@@ -96,6 +128,24 @@ class EditorView @JvmOverloads constructor(
     private val matchPaint = Paint()
     private val matchPath = Path()
     private var gutterWidth = 0
+
+    private val guidePaint = Paint()
+    private val bracketPaint = Paint()
+    private val bracketBadPaint = Paint()
+    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bubbleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private var pairsSorted: List<PairDef> = emptyList()
+    private var openChars = "([{"
+    private var closeChars = ")]}"
+    private var bmA = -1
+    private var bmB = -1
+    private var rawEdit = false
+
+    private var thumbUntil = 0L
+    private var draggingThumb = false
+    private var dragOffset = 0f
 
     private var lineStarts = IntArray(1)
     private var lineCount = 1
@@ -178,6 +228,7 @@ class EditorView @JvmOverloads constructor(
                 }
             }
             if (showLineNumbers) refreshGutterWidth(false)
+            updateBracketMatch()
             scheduleTokenize(if (programmatic) 0L else 250L)
             onEdited?.invoke()
         }
@@ -185,10 +236,39 @@ class EditorView @JvmOverloads constructor(
         override fun afterTextChanged(s: Editable?) {}
     }
 
-    private val indentFilter = InputFilter { source, start, end, dest, dstart, _ ->
-        if (programmatic || !autoIndent || source == null || end - start != 1 || source[start] != '\n') {
-            return@InputFilter null
+    private val inputFilter = InputFilter { source, start, end, dest, dstart, dend ->
+        if (programmatic || rawEdit || source == null || end - start != 1) {
+            null
+        } else {
+            val c = source[start]
+            if (c == '\n') {
+                handleEnter(dest, dstart, dend)
+            } else if (autoClose && pairsSorted.isNotEmpty()) {
+                handlePair(c, dest, dstart, dend)
+            } else {
+                null
+            }
         }
+    }
+
+    private fun postCaret(pos: Int) {
+        post { setSelection(pos.coerceIn(0, buffer.length)) }
+    }
+
+    private fun postSelect(a: Int, b: Int) {
+        post {
+            val n = buffer.length
+            setSelection(a.coerceIn(0, n), b.coerceIn(0, n))
+        }
+    }
+
+    private fun isCloseChar(c: Char): Boolean {
+        for (p in pairsSorted) if (p.close.length == 1 && p.close[0] == c) return true
+        return false
+    }
+
+    private fun handleEnter(dest: CharSequence, dstart: Int, dend: Int): CharSequence? {
+        if (!autoIndent) return null
         var ls = dstart
         while (ls > 0 && dest[ls - 1] != '\n') ls--
         var i = ls
@@ -197,11 +277,92 @@ class EditorView @JvmOverloads constructor(
         var j = dstart - 1
         while (j >= ls && (dest[j] == ' ' || dest[j] == '\t')) j--
         var extra = ""
+        var between = false
         if (j >= ls) {
             val ch = dest[j]
             if (ch == '{' || ch == '(' || ch == '[' || (ch == ':' && blockColon)) extra = indentUnit()
+            val oi = openChars.indexOf(ch)
+            if (oi >= 0 && j == dstart - 1 && dend == dstart && dend < dest.length && dest[dend] == closeChars[oi]) {
+                between = true
+            }
         }
-        "\n" + indent + extra
+        if (between) {
+            postCaret(dstart + 1 + indent.length + extra.length)
+            return "\n" + indent + extra + "\n" + indent
+        }
+        return "\n" + indent + extra
+    }
+
+    private fun handlePair(c: Char, dest: CharSequence, dstart: Int, dend: Int): CharSequence? {
+        val hasSel = dend > dstart
+        val next: Char? = if (dend < dest.length) dest[dend] else null
+        val prev: Char? = if (dstart > 0) dest[dstart - 1] else null
+
+        // typing a closing character that is already there: just step over it
+        if (!hasSel && next == c && isCloseChar(c)) {
+            postCaret(dstart + 1)
+            return ""
+        }
+
+        for (p in pairsSorted) {
+            val tr = p.open
+            if (tr[tr.length - 1] != c) continue
+            val pre = tr.length - 1
+            if (pre > 0) {
+                if (dstart < pre) continue
+                if (dest.subSequence(dstart - pre, dstart).toString() != tr.substring(0, pre)) continue
+            }
+            if (hasSel) {
+                if (pre > 0) continue
+                val sel = dest.subSequence(dstart, dend).toString()
+                postSelect(dstart + 1, dstart + 1 + sel.length)
+                return tr + sel + p.close
+            }
+            if (p.open == p.close) {
+                if (prev != null && (prev.isLetterOrDigit() || prev == '\\' || prev == c)) continue
+                if (next != null && next.isLetterOrDigit()) continue
+            } else {
+                if (next != null && !(next.isWhitespace() || isCloseChar(next) || ",;:.".indexOf(next) >= 0)) continue
+            }
+            postCaret(dstart + 1)
+            return c.toString() + p.close
+        }
+        return null
+    }
+
+    /** Backspace between an auto-inserted pair removes both halves. */
+    private fun pairBackspace(): Boolean {
+        if (!autoClose || programmatic) return false
+        val a = selectionStart
+        if (a < 0 || a != selectionEnd) return false
+        val t = buffer
+        for (p in pairsSorted) {
+            val o = p.open
+            val c = p.close
+            if (a >= o.length && a + c.length <= t.length &&
+                t.subSequence(a - o.length, a).toString() == o &&
+                t.subSequence(a, a + c.length).toString() == c
+            ) {
+                t.delete(a - o.length, a + c.length)
+                return true
+            }
+        }
+        return false
+    }
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val ic = super.onCreateInputConnection(outAttrs) ?: return null
+        return object : InputConnectionWrapper(ic, true) {
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                if (beforeLength == 1 && afterLength == 0 && pairBackspace()) return true
+                return super.deleteSurroundingText(beforeLength, afterLength)
+            }
+
+            override fun sendKeyEvent(event: KeyEvent): Boolean {
+                if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DEL && pairBackspace()) return true
+                return super.sendKeyEvent(event)
+            }
+        }
     }
 
     init {
@@ -209,10 +370,12 @@ class EditorView @JvmOverloads constructor(
         gutterPaint.typeface = Typeface.MONOSPACE
         gravity = android.view.Gravity.TOP or android.view.Gravity.START
         setHorizontallyScrolling(false)
-        isVerticalScrollBarEnabled = true
+        isVerticalScrollBarEnabled = false
         setLineSpacing(0f, 1.1f)
-        filters = arrayOf(indentFilter)
+        filters = arrayOf(inputFilter)
         addTextChangedListener(watcher)
+        bubbleTextPaint.textSize = dp(13f)
+        bubbleTextPaint.typeface = Typeface.DEFAULT_BOLD
         applyFontSize(14f)
     }
 
@@ -227,6 +390,10 @@ class EditorView @JvmOverloads constructor(
         dividerPaint.color = (t.gutterFg and 0x00FFFFFF) or 0x40000000
         linePaint.color = t.currentLine
         matchPaint.color = t.findMatch
+        guidePaint.color = (t.gutterFg and 0x00FFFFFF) or 0x55000000
+        bracketPaint.color = (t.accent and 0x00FFFFFF) or 0x66000000
+        bracketBadPaint.color = 0x66FF5555
+        bubbleTextPaint.color = t.bg
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val d = GradientDrawable()
@@ -450,6 +617,11 @@ class EditorView @JvmOverloads constructor(
                 val line = l.getLineForOffset(a)
                 canvas.drawRect(sx, top + l.getLineTop(line), sx + width, top + l.getLineBottom(line), linePaint)
             }
+            if (showGuides) drawGuides(canvas, l)
+            if (bmA >= 0) {
+                drawRange(canvas, l, bmA, bmA + 1, if (bmB >= 0) bracketPaint else bracketBadPaint)
+                if (bmB >= 0) drawRange(canvas, l, bmB, bmB + 1, bracketPaint)
+            }
             if (curS >= 0 && curE > curS && curE <= buffer.length) {
                 matchPath.reset()
                 l.getSelectionPath(curS, curE, matchPath)
@@ -461,6 +633,7 @@ class EditorView @JvmOverloads constructor(
         }
         super.onDraw(canvas)
         if (showLineNumbers && l != null && th != null) drawGutter(canvas, l, th)
+        if (th != null) drawThumb(canvas, l)
     }
 
     private fun drawGutter(canvas: Canvas, l: Layout, th: EditorTheme) {
@@ -490,13 +663,16 @@ class EditorView @JvmOverloads constructor(
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
         curS = -1
+        updateBracketMatch()
         invalidate()
         onCaretMoved?.invoke()
     }
 
     override fun onScrollChanged(horiz: Int, vert: Int, oldHoriz: Int, oldVert: Int) {
         super.onScrollChanged(horiz, vert, oldHoriz, oldVert)
+        thumbUntil = SystemClock.uptimeMillis() + 1200L
         scheduleSpans(40L)
+        invalidate()
     }
 
     private fun maxScrollY(): Int {
@@ -514,6 +690,7 @@ class EditorView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (handleThumbTouch(event)) return true
         flingDetector.onTouchEvent(event)
         scaleDetector.onTouchEvent(event)
         if (scaleDetector.isInProgress) return true
@@ -705,8 +882,274 @@ class EditorView @JvmOverloads constructor(
     fun replaceAllText(s: String) {
         val t = buffer
         val keep = min(max(0, selectionStart), s.length)
-        t.replace(0, t.length, s)
+        replaceRange(0, t.length, s)
         setSelection(keep)
+    }
+
+    // ---- brackets ----
+    private fun rebuildBrackets() {
+        val o = StringBuilder("([{")
+        val c = StringBuilder(")]}")
+        for (p in pairs) {
+            if (p.open.length == 1 && p.close.length == 1 && p.open != p.close &&
+                o.indexOf(p.open) < 0 && c.indexOf(p.close) < 0
+            ) {
+                o.append(p.open)
+                c.append(p.close)
+            }
+        }
+        openChars = o.toString()
+        closeChars = c.toString()
+    }
+
+    private fun isBr(ch: Char): Boolean = openChars.indexOf(ch) >= 0 || closeChars.indexOf(ch) >= 0
+
+    private fun updateBracketMatch() {
+        bmA = -1
+        bmB = -1
+        if (!bracketMatch) return
+        val t = text ?: return
+        val pos = selectionStart
+        if (pos < 0 || pos != selectionEnd) return
+        val n = t.length
+        var idx = -1
+        if (pos > 0 && pos <= n && isBr(t[pos - 1])) idx = pos - 1
+        else if (pos < n && isBr(t[pos])) idx = pos
+        if (idx < 0) return
+        val ch = t[idx]
+        var found = -1
+        val oi = openChars.indexOf(ch)
+        if (oi >= 0) {
+            val close = closeChars[oi]
+            val end = min(n, idx + 1 + BR_SCAN)
+            val buf = CharArray(end - idx - 1)
+            TextUtils.getChars(t, idx + 1, end, buf, 0)
+            var depth = 1
+            for (k in buf.indices) {
+                val c = buf[k]
+                if (c == ch) {
+                    depth++
+                } else if (c == close) {
+                    depth--
+                    if (depth == 0) {
+                        found = idx + 1 + k
+                        break
+                    }
+                }
+            }
+        } else {
+            val open = openChars[closeChars.indexOf(ch)]
+            val start = max(0, idx - BR_SCAN)
+            val buf = CharArray(idx - start)
+            TextUtils.getChars(t, start, idx, buf, 0)
+            var depth = 1
+            for (k in buf.indices.reversed()) {
+                val c = buf[k]
+                if (c == ch) {
+                    depth++
+                } else if (c == open) {
+                    depth--
+                    if (depth == 0) {
+                        found = start + k
+                        break
+                    }
+                }
+            }
+        }
+        bmA = idx
+        bmB = found
+    }
+
+    fun jumpToMatchingBracket(): Boolean {
+        updateBracketMatch()
+        if (bmA < 0 || bmB < 0) return false
+        val target = if (bmB > bmA) bmB + 1 else bmB
+        setSelection(target)
+        revealOffset(target)
+        return true
+    }
+
+    private fun drawRange(canvas: Canvas, l: Layout, s: Int, e: Int, p: Paint) {
+        matchPath.reset()
+        l.getSelectionPath(s, e, matchPath)
+        canvas.save()
+        canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+        canvas.drawPath(matchPath, p)
+        canvas.restore()
+    }
+
+    // ---- indent guides ----
+    private fun firstNonWs(t: CharSequence, ls: Int): Int {
+        val lim = min(t.length, ls + 400)
+        var i = ls
+        while (i < lim && (t[i] == ' ' || t[i] == '\t')) i++
+        if (i >= t.length || t[i] == '\n') return -1
+        return i
+    }
+
+    private fun guidesFor(l: Layout, t: Editable, ls0: Int): FloatArray {
+        var ls = ls0
+        var fn = firstNonWs(t, ls)
+        var tries = 0
+        while (fn < 0 && tries < 30) {
+            val e = lineEnd(ls)
+            if (e >= t.length) return EMPTY_F
+            ls = e + 1
+            fn = firstNonWs(t, ls)
+            tries++
+        }
+        if (fn < 0) return EMPTY_F
+        val out = ArrayList<Float>(4)
+        var cols = 0
+        var i = ls
+        while (i < fn) {
+            val ch = t[i]
+            if (ch == '\t' || cols % tabSize == 0) out.add(l.getPrimaryHorizontal(i))
+            cols += if (ch == '\t') tabSize else 1
+            i++
+        }
+        return out.toFloatArray()
+    }
+
+    private fun drawGuides(canvas: Canvas, l: Layout) {
+        val t = buffer
+        val top = extendedPaddingTop
+        val first = l.getLineForVertical(max(0, scrollY - top))
+        val last = l.getLineForVertical(max(0, scrollY + height - top))
+        val left = compoundPaddingLeft.toFloat()
+        val w = max(1f, dp(1f))
+        val cache = HashMap<Int, FloatArray>()
+        for (row in first..last) {
+            var r = row
+            var steps = 0
+            while (r > 0 && steps < 200 && t[l.getLineStart(r) - 1] != '\n') {
+                r--
+                steps++
+            }
+            if (r > 0 && t[l.getLineStart(r) - 1] != '\n') continue
+            val ls = l.getLineStart(r)
+            var g = cache[ls]
+            if (g == null) {
+                g = guidesFor(l, t, ls)
+                cache[ls] = g
+            }
+            if (g.isEmpty()) continue
+            val y1 = (top + l.getLineTop(row)).toFloat()
+            val y2 = (top + l.getLineBottom(row)).toFloat()
+            for (x in g) canvas.drawRect(left + x, y1, left + x + w, y2, guidePaint)
+        }
+    }
+
+    // ---- fast scroller ----
+    /** [top, height] of the scroll thumb in view coordinates, or null when nothing can scroll. */
+    private fun thumbMetrics(): FloatArray? {
+        val l = layout ?: return null
+        val maxY = maxScrollY()
+        if (maxY <= 0) return null
+        val pad = dp(4f)
+        val track = height - 2 * pad
+        if (track <= 0f) return null
+        val total = (l.height + compoundPaddingTop + compoundPaddingBottom).toFloat()
+        val minH = min(dp(48f), track)
+        val h = (track * height / total).coerceIn(minH, track)
+        val frac = (scrollY.toFloat() / maxY).coerceIn(0f, 1f)
+        return floatArrayOf(pad + frac * (track - h), h)
+    }
+
+    private fun drawThumb(canvas: Canvas, l: Layout?) {
+        val th = edTheme ?: return
+        val m = thumbMetrics() ?: return
+        val now = SystemClock.uptimeMillis()
+        val a = if (draggingThumb) 1f else ((thumbUntil - now) / 300f).coerceIn(0f, 1f)
+        if (a <= 0f) return
+        val w = if (draggingThumb) dp(8f) else dp(5f)
+        val right = scrollX + width - dp(3f)
+        val top = scrollY + m[0]
+        thumbPaint.color = th.fg
+        thumbPaint.alpha = ((if (draggingThumb) 190 else 110) * a).toInt()
+        canvas.drawRoundRect(RectF(right - w, top, right, top + m[1]), w / 2, w / 2, thumbPaint)
+        if (draggingThumb && l != null) {
+            val row = l.getLineForVertical(max(0, scrollY - extendedPaddingTop))
+            val label = "Ln " + (lineIndexOf(l.getLineStart(row)) + 1)
+            val tw = bubbleTextPaint.measureText(label)
+            val bh = dp(28f)
+            val padH = dp(10f)
+            val bRight = right - w - dp(10f)
+            val lo = scrollY + dp(4f)
+            val hi = scrollY + height - bh - dp(4f)
+            val bTop = (top + m[1] / 2 - bh / 2).coerceIn(lo, max(lo, hi))
+            bubblePaint.color = th.accent
+            canvas.drawRoundRect(RectF(bRight - tw - 2 * padH, bTop, bRight, bTop + bh), dp(8f), dp(8f), bubblePaint)
+            canvas.drawText(label, bRight - tw - padH, bTop + bh / 2 + bubbleTextPaint.textSize / 3f, bubbleTextPaint)
+        }
+        if (!draggingThumb) postInvalidateOnAnimation()
+    }
+
+    private fun handleThumbTouch(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val m = thumbMetrics() ?: return false
+                if (e.x >= width - dp(30f) && e.y >= m[0] - dp(14f) && e.y <= m[0] + m[1] + dp(14f)) {
+                    draggingThumb = true
+                    dragOffset = e.y - m[0]
+                    scroller.abortAnimation()
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    invalidate()
+                    return true
+                }
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!draggingThumb) return false
+                val m = thumbMetrics() ?: return true
+                val pad = dp(4f)
+                val range = height - 2 * pad - m[1]
+                if (range > 0f) {
+                    val frac = ((e.y - dragOffset - pad) / range).coerceIn(0f, 1f)
+                    scrollTo(scrollX, (frac * maxScrollY()).toInt())
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!draggingThumb) return false
+                draggingThumb = false
+                thumbUntil = SystemClock.uptimeMillis() + 1200L
+                invalidate()
+                return true
+            }
+        }
+        return false
+    }
+
+    // ---- text tools ----
+    /** Replaces [s,e) without triggering auto-close / auto-indent. */
+    fun replaceRange(s: Int, e: Int, str: String) {
+        rawEdit = true
+        try {
+            buffer.replace(s, e, str)
+        } finally {
+            rawEdit = false
+        }
+    }
+
+    /** Applies [f] to the selection (or the whole text). Returns an error message, or null on success. */
+    fun transformText(f: (String) -> String): String? {
+        val t = buffer
+        val a = max(0, min(selectionStart, selectionEnd))
+        val b = max(0, max(selectionStart, selectionEnd))
+        val hasSel = b > a
+        val s0 = if (hasSel) a else 0
+        val e0 = if (hasSel) b else t.length
+        val src = t.subSequence(s0, e0).toString()
+        val out = try {
+            f(src)
+        } catch (ex: Exception) {
+            return ex.message ?: "Failed"
+        }
+        if (out == src) return null
+        replaceRange(s0, e0, out)
+        if (hasSel) setSelection(s0, min(s0 + out.length, t.length)) else setSelection(min(a, t.length))
+        return null
     }
 
     // ---- find support ----

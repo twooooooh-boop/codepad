@@ -49,6 +49,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var find: FindController
     private lateinit var prefs: SharedPreferences
     private lateinit var store: SessionStore
+    private lateinit var cfg: AppSettings
+    private var checkingExternal = false
 
     private val docs = ArrayList<Doc>()
     private var active: Doc? = null
@@ -89,6 +91,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences("codepad", MODE_PRIVATE)
         store = SessionStore(this)
+        cfg = AppSettings(this)
 
         root = findViewById(R.id.main)
         toolbar = findViewById(R.id.toolbar)
@@ -143,7 +146,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         setupSymbols()
-        loadSettings()
+        applySettings()
 
         editor.onCaretMoved = { updateStatus() }
         editor.onEdited = { onEdited() }
@@ -198,6 +201,69 @@ class MainActivity : AppCompatActivity() {
         store.save(docs, max(0, docs.indexOf(active)))
     }
 
+    override fun onResume() {
+        super.onResume()
+        applySettings()
+        checkExternalChange()
+    }
+
+    private fun checkExternalChange() {
+        val d = active ?: return
+        val uri = d.uri ?: return
+        if (!d.loaded || d.diskTime == 0L || checkingExternal) return
+        checkingExternal = true
+        io.execute {
+            val t = FileIO.lastModified(contentResolver, uri)
+            ui.post {
+                checkingExternal = false
+                if (t != 0L && t > d.diskTime && d === active) promptExternal(d, uri, t)
+            }
+        }
+    }
+
+    private fun promptExternal(d: Doc, uri: Uri, t: Long) {
+        d.diskTime = t
+        val warn = if (d.isModified) " Reloading discards your unsaved changes." else ""
+        MaterialAlertDialogBuilder(this)
+            .setTitle("File changed on disk")
+            .setMessage("\"${d.name}\" was modified outside CodePad.$warn")
+            .setPositiveButton("Reload") { _, _ -> reloadDoc(d, uri) }
+            .setNegativeButton("Keep mine") { _, _ ->
+                d.undo.forceModified()
+                refreshAll()
+            }
+            .show()
+    }
+
+    private fun reloadDoc(d: Doc, uri: Uri) {
+        io.execute {
+            var res: FileIO.Loaded? = null
+            var err: Exception? = null
+            try {
+                res = FileIO.read(contentResolver, uri)
+            } catch (e: Exception) {
+                err = e
+            }
+            val t = FileIO.lastModified(contentResolver, uri)
+            val r = res
+            val e2 = err
+            ui.post {
+                if (r != null) {
+                    d.content = r.text
+                    d.crlf = r.crlf
+                    d.charset = r.charset
+                    d.bom = r.bom
+                    d.diskTime = t
+                    d.undo.reset()
+                    if (d === active) showInEditor(d)
+                    toast("Reloaded " + d.name)
+                } else {
+                    toast("Reload failed: " + (e2?.message ?: "unknown error"))
+                }
+            }
+        }
+    }
+
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         if (e.action == KeyEvent.ACTION_DOWN && e.isCtrlPressed) {
             when (e.keyCode) {
@@ -221,22 +287,26 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ settings / theme
 
-    private fun loadSettings() {
+    private fun applySettings() {
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
-        val saved = Themes.byName(prefs.getString("theme", null))
-        edTheme = saved ?: if (night) Themes.all[0] else Themes.all[4]
-        editor.wordWrap = prefs.getBoolean("wrap", true)
-        editor.showLineNumbers = prefs.getBoolean("lines", true)
-        editor.autoIndent = prefs.getBoolean("indent", true)
-        editor.tabSize = prefs.getInt("tabsize", 4)
-        editor.useSpaces = prefs.getBoolean("spaces", true)
-        editor.applyFontSize(prefs.getFloat("font", 14f))
+        edTheme = Themes.byName(cfg.theme) ?: if (night) Themes.all[0] else Themes.all[4]
+        if (editor.wordWrap != cfg.wrap) editor.wordWrap = cfg.wrap
+        if (editor.showLineNumbers != cfg.lines) editor.showLineNumbers = cfg.lines
+        editor.autoIndent = cfg.autoIndent
+        editor.tabSize = cfg.tabSize
+        editor.useSpaces = cfg.spaces
+        editor.autoClose = cfg.autoClose
+        editor.pairs = cfg.pairs
+        if (editor.bracketMatch != cfg.bracketMatch) editor.bracketMatch = cfg.bracketMatch
+        if (editor.showGuides != cfg.guides) editor.showGuides = cfg.guides
+        if (editor.fontSp != cfg.font) editor.applyFontSize(cfg.font)
         val m = toolbar.menu
         m.findItem(R.id.m_wrap)?.isChecked = editor.wordWrap
         m.findItem(R.id.m_lines)?.isChecked = editor.showLineNumbers
         m.findItem(R.id.m_autoindent)?.isChecked = editor.autoIndent
-        m.findItem(R.id.m_autosave)?.isChecked = prefs.getBoolean("autosave", false)
+        m.findItem(R.id.m_autosave)?.isChecked = cfg.autosave
+        applyTheme()
     }
 
     private fun applyTheme() {
@@ -375,6 +445,9 @@ class MainActivity : AppCompatActivity() {
             R.id.m_enc -> pickEncoding()
             R.id.m_eol -> pickLineEnding()
             R.id.m_share -> shareText()
+            R.id.m_tools -> showTools()
+            R.id.m_bracket -> if (!editor.jumpToMatchingBracket()) toast("No matching bracket here")
+            R.id.m_settings -> startActivity(Intent(this, SettingsActivity::class.java))
         }
         return true
     }
@@ -500,6 +573,7 @@ class MainActivity : AppCompatActivity() {
             var err: Exception? = null
             try {
                 res = FileIO.read(contentResolver, uri)
+                d.diskTime = FileIO.lastModified(contentResolver, uri)
             } catch (e: Exception) {
                 err = e
             }
@@ -605,6 +679,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun saveDoc(d: Doc, then: (() -> Unit)? = null) {
         if (d === active) syncActive()
+        applySaveTransforms(d)
         val uri = d.uri
         if (uri == null) {
             saveAs(d, then)
@@ -650,6 +725,7 @@ class MainActivity : AppCompatActivity() {
             var err: Exception? = null
             try {
                 FileIO.write(contentResolver, uri, FileIO.encode(text, crlf, cs, bom))
+                d.diskTime = FileIO.lastModified(contentResolver, uri)
             } catch (e: Exception) {
                 err = e
             }
@@ -697,6 +773,7 @@ class MainActivity : AppCompatActivity() {
         r?.isEnabled = um.canRedo()
         u?.icon?.alpha = if (um.canUndo()) 255 else 90
         r?.icon?.alpha = if (um.canRedo()) 255 else 90
+        menu.findItem(R.id.m_save)?.icon?.alpha = if (active?.isModified == true) 255 else 90
     }
 
     private fun updateStatus() {
@@ -816,6 +893,52 @@ class MainActivity : AppCompatActivity() {
         i.type = "text/plain"
         i.putExtra(Intent.EXTRA_TEXT, t.toString())
         startActivity(Intent.createChooser(i, "Share text"))
+    }
+
+    // ------------------------------------------------------------------ text tools
+
+    private fun applySaveTransforms(d: Doc) {
+        if (d !== active) return
+        val trim = cfg.trimOnSave
+        val nl = cfg.finalNewline
+        if (!trim && !nl) return
+        syncActive()
+        val src = d.content
+        var out = src
+        if (trim) out = Tools.trimTrailing(out)
+        if (nl && out.isNotEmpty() && !out.endsWith("\n")) out += "\n"
+        if (out != src) {
+            editor.replaceAllText(out)
+            syncActive()
+        }
+    }
+
+    private fun showTools() {
+        val names = arrayOf(
+            "Format JSON", "Minify JSON", "Sort lines A→Z", "Sort lines Z→A", "Remove duplicate lines",
+            "UPPERCASE", "lowercase", "Trim trailing spaces", "Tabs → spaces", "Spaces → tabs"
+        )
+        val scope = if (editor.selectionStart != editor.selectionEnd) "selection" else "whole file"
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Text tools ($scope)")
+            .setItems(names) { _, which ->
+                val unit = editor.indentUnit()
+                val tab = editor.tabSize
+                val err = when (which) {
+                    0 -> editor.transformText { Tools.formatJson(it, unit) }
+                    1 -> editor.transformText { Tools.minifyJson(it) }
+                    2 -> editor.transformText { Tools.sortLines(it, false) }
+                    3 -> editor.transformText { Tools.sortLines(it, true) }
+                    4 -> editor.transformText { Tools.uniqueLines(it) }
+                    5 -> editor.transformText { it.uppercase() }
+                    6 -> editor.transformText { it.lowercase() }
+                    7 -> editor.transformText { Tools.trimTrailing(it) }
+                    8 -> editor.transformText { Tools.tabsToSpaces(it, tab) }
+                    else -> editor.transformText { Tools.spacesToTabs(it, tab) }
+                }
+                if (err != null) toast(err)
+            }
+            .show()
     }
 
     // ------------------------------------------------------------------ recent files

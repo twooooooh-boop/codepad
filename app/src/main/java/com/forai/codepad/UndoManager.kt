@@ -34,6 +34,16 @@ class UndoManager {
         savedValid = false
     }
 
+    /** Forget all history and treat the current text as saved. */
+    fun reset() {
+        undo.clear()
+        redo.clear()
+        savedAt = 0
+        savedValid = true
+        noMerge = false
+        version++
+    }
+
     fun record(start: Int, before: String, after: String) {
         if (before == after) return
         version++

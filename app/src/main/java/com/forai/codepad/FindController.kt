@@ -251,7 +251,7 @@ class FindController(
             countView.text = "bad replacement"
             return
         }
-        t.replace(s, e, result)
+        editor.replaceRange(s, e, result)
         editor.setSelection(min(s + result.length, t.length))
         next()
     }
