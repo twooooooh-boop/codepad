@@ -8,3 +8,6 @@ symbol bar, line ops (duplicate/delete/move/comment/indent), 6 themes, pinch-zoo
 handling, hardware-keyboard shortcuts, open-with / share-to support.
 
 Build: push to GitHub -> Actions -> "Build APK" -> Run workflow -> download app-debug.apk from Releases.
+
+Run files: the toolbar Run button (or F5) runs the open file through a plugin runner. Runners, snippets,
+commands and scripts all come from plugins - see docs/PLUGINS.md.

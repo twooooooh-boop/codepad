@@ -19,6 +19,9 @@
     <item android:id="@+id/m_save_as" android:title="Save as…" app:showAsAction="never" />
     <item android:id="@+id/m_recent" android:title="Recent files…" app:showAsAction="never" />
     <item android:id="@+id/m_close" android:title="Close tab" app:showAsAction="never" />
+    <item android:id="@+id/m_close_others" android:title="Close other tabs" app:showAsAction="never" />
+    <item android:id="@+id/m_close_all" android:title="Close all tabs" app:showAsAction="never" />
+    <item android:id="@+id/m_save_all" android:title="Save all" app:showAsAction="never" />
     <item android:id="@+id/m_goto" android:title="Go to line…" app:showAsAction="never" />
     <item android:id="@+id/m_bracket" android:title="Jump to matching bracket" app:showAsAction="never" />
     <item android:id="@+id/m_selline" android:title="Select line" app:showAsAction="never" />

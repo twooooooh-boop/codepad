@@ -1,5 +1,6 @@
 package com.forai.codepad
 
+import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
@@ -18,6 +19,7 @@ import androidx.appcompat.widget.SwitchCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.security.MessageDigest
 import kotlin.math.max
 
 class SettingsActivity : AppCompatActivity() {
@@ -126,8 +128,35 @@ class SettingsActivity : AppCompatActivity() {
                 .show()
         }
 
+        header("About")
+        choiceRow("CodePad", aboutLine()) { showAbout() }
+
         val pad = View(this)
         content.addView(pad, LinearLayout.LayoutParams(1, dp(32)))
+    }
+
+    private fun aboutLine(): String = try {
+        val pi = packageManager.getPackageInfo(packageName, 0)
+        "Version " + pi.versionName + " (build " + pi.longVersionCode + ")"
+    } catch (e: Exception) {
+        "Version unknown"
+    }
+
+    private fun showAbout() {
+        val text = try {
+            val pi = packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            val sig = pi.signingInfo?.apkContentsSigners?.firstOrNull()
+            val fp = if (sig != null) {
+                MessageDigest.getInstance("SHA-256").digest(sig.toByteArray()).joinToString(":") { "%02X".format(it) }
+            } else {
+                "unknown"
+            }
+            "Version " + pi.versionName + " (build " + pi.longVersionCode + ")\n\nSigning key (SHA-256):\n" + fp +
+                    "\n\nIf this fingerprint is the same in every build, new APKs install over old ones and keep your data."
+        } catch (e: Exception) {
+            "Could not read app info: " + e.message
+        }
+        MaterialAlertDialogBuilder(this).setTitle("About CodePad").setMessage(text).setPositiveButton("Close", null).show()
     }
 
     private fun indentationLabel(): String =

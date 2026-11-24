@@ -1,5 +1,8 @@
 name: Build APK
-on: workflow_dispatch
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -13,12 +16,14 @@ jobs:
           java-version: 25
       - name: Accept SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-      - name: Build
+      - name: Build release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
-      - name: Release
+          ./gradlew assembleRelease
+      - name: Name the APK
+        run: cp app/build/outputs/apk/release/app-release.apk "CodePad-v${{ github.run_number }}.apk"
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ github.run_number }}" app/build/outputs/apk/debug/app-debug.apk --title "CodePad v${{ github.run_number }}" --notes "Debug build"
+          gh release create "v${{ github.run_number }}" "CodePad-v${{ github.run_number }}.apk" --title "CodePad v${{ github.run_number }}" --notes "Release build, signed with the CodePad key."

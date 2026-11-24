@@ -189,6 +189,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (savedInstanceState == null) handleIntent(intent)
+        showCrashIfAny()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -430,6 +431,9 @@ class MainActivity : AppCompatActivity() {
             R.id.m_save_as -> active?.let { saveAs(it) }
             R.id.m_recent -> showRecent()
             R.id.m_close -> active?.let { closeDoc(it) }
+            R.id.m_close_others -> closeOthers()
+            R.id.m_close_all -> closeAll()
+            R.id.m_save_all -> saveAll()
             R.id.m_goto -> gotoLine()
             R.id.m_selline -> editor.selectLine()
             R.id.m_dup -> editor.duplicateLines()
@@ -779,8 +783,15 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ UI refresh
 
+    private val draftRunnable = Runnable {
+        syncActive()
+        store.save(docs, max(0, docs.indexOf(active)))
+    }
+
     private fun onEdited() {
         if (active == null) return
+        ui.removeCallbacks(draftRunnable)
+        ui.postDelayed(draftRunnable, 4000L)
         refreshTabs()
         updateUndoRedo()
         updateStatus()
@@ -922,6 +933,78 @@ class MainActivity : AppCompatActivity() {
         i.type = "text/plain"
         i.putExtra(Intent.EXTRA_TEXT, t.toString())
         startActivity(Intent.createChooser(i, "Share text"))
+    }
+
+    // ------------------------------------------------------------------ tabs: bulk actions, crash report
+
+    private fun saveAll() {
+        syncActive()
+        val todo = docs.filter { it.isModified && it.uri != null }
+        val untitled = docs.count { it.isModified && it.uri == null }
+        for (d in todo) saveDoc(d)
+        if (todo.isEmpty() && untitled == 0) {
+            toast("Nothing to save")
+        } else if (untitled > 0) {
+            toast("$untitled untitled file(s) need Save as")
+        }
+    }
+
+    private fun confirmDiscard(count: Int, what: String, action: () -> Unit) {
+        val dirty = docs.count { it.isModified && (what != "others" || it !== active) }
+        if (dirty == 0) {
+            action()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Unsaved changes")
+            .setMessage("$dirty of the $count tab(s) have unsaved changes that will be lost.")
+            .setPositiveButton("Close anyway") { _, _ -> action() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun closeOthers() {
+        val keep = active ?: return
+        syncActive()
+        val n = docs.size - 1
+        if (n <= 0) return
+        confirmDiscard(n, "others") {
+            docs.removeAll { it !== keep }
+            pendingDoc = null
+            rebuildTabs()
+            toast("Closed $n tab(s)")
+        }
+    }
+
+    private fun closeAll() {
+        syncActive()
+        confirmDiscard(docs.size, "all") {
+            docs.clear()
+            active = null
+            pendingDoc = null
+            newDoc()
+        }
+    }
+
+    private fun showCrashIfAny() {
+        val report = CrashReporter.pending(this) ?: return
+        CrashReporter.clear(this)
+        MaterialAlertDialogBuilder(this)
+            .setTitle("CodePad crashed last time")
+            .setMessage("Your open files were kept as drafts. Copy or share the report so the bug can be fixed.\n\n" + report.take(500))
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("CodePad crash report", report))
+                toast("Copied")
+            }
+            .setNeutralButton("Share") { _, _ ->
+                val i = Intent(Intent.ACTION_SEND)
+                i.type = "text/plain"
+                i.putExtra(Intent.EXTRA_TEXT, report)
+                startActivity(Intent.createChooser(i, "Share crash report"))
+            }
+            .setNegativeButton("Dismiss", null)
+            .show()
     }
 
     // ------------------------------------------------------------------ plugins / run

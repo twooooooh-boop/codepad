@@ -8,20 +8,40 @@ android {
         version = release(37)
     }
 
+    // CI sets GITHUB_RUN_NUMBER so every build has a higher versionCode and updates install over older ones.
+    val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+    // Set codepad.minify=false in gradle.properties to build an unshrunk release.
+    val minify = (findProperty("codepad.minify") as String?) != "false"
+
     defaultConfig {
         applicationId = "com.forai.codepad"
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = runNumber
+        versionName = "2.0." + runNumber
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Persistent signing key. It lives in the repo (app/codepad.keystore) so every build - debug or release,
+    // on any machine - is signed with the same key and new APKs install over old ones.
+    signingConfigs {
+        create("codepad") {
+            storeFile = file("codepad.keystore")
+            storePassword = "qvCZrX8B2Pq3ZV4yDLoI"
+            keyAlias = "codepad"
+            keyPassword = "qvCZrX8B2Pq3ZV4yDLoI"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("codepad")
+        }
         release {
+            signingConfig = signingConfigs.getByName("codepad")
             optimization {
-                enable = false
+                enable = minify
             }
         }
     }
