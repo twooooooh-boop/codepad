@@ -1,0 +1,158 @@
+{
+  "id": "codepad.snippets",
+  "name": "Basic Snippets",
+  "version": "1.0.0",
+  "publisher": "CodePad",
+  "description": "Type a prefix and press Tab to expand. Uses ${1:placeholder} and $0 like VS Code.",
+  "engine": 1,
+  "builtin": true,
+  "permissions": [],
+  "contributes": {
+    "snippets": [
+      {
+        "language": "Python",
+        "prefix": "def",
+        "name": "function",
+        "body": "def ${1:name}(${2:args}):\n    ${3:pass}$0"
+      },
+      {
+        "language": "Python",
+        "prefix": "cls",
+        "name": "class",
+        "body": "class ${1:Name}:\n    def __init__(self${2}):\n        ${3:pass}$0"
+      },
+      {
+        "language": "Python",
+        "prefix": "main",
+        "name": "main guard",
+        "body": "if __name__ == \"__main__\":\n    ${1:main()}$0"
+      },
+      {
+        "language": "Python",
+        "prefix": "for",
+        "name": "for loop",
+        "body": "for ${1:item} in ${2:items}:\n    ${3:pass}$0"
+      },
+      {
+        "language": "Python",
+        "prefix": "ifmain",
+        "name": "if",
+        "body": "if ${1:cond}:\n    ${2:pass}$0"
+      },
+      {
+        "language": "Kotlin",
+        "prefix": "fn",
+        "name": "function",
+        "body": "fun ${1:name}(${2}): ${3:Unit} {\n    $0\n}"
+      },
+      {
+        "language": "Kotlin",
+        "prefix": "main",
+        "name": "main",
+        "body": "fun main() {\n    $0\n}"
+      },
+      {
+        "language": "Kotlin",
+        "prefix": "cls",
+        "name": "class",
+        "body": "class ${1:Name}(${2}) {\n    $0\n}"
+      },
+      {
+        "language": "Kotlin",
+        "prefix": "dc",
+        "name": "data class",
+        "body": "data class ${1:Name}(val ${2:id}: ${3:Int})$0"
+      },
+      {
+        "language": "Java",
+        "prefix": "main",
+        "name": "main method",
+        "body": "public static void main(String[] args) {\n    $0\n}"
+      },
+      {
+        "language": "Java",
+        "prefix": "sout",
+        "name": "System.out.println",
+        "body": "System.out.println(${1:\"\"});$0"
+      },
+      {
+        "language": "JavaScript",
+        "prefix": "fn",
+        "name": "function",
+        "body": "function ${1:name}(${2}) {\n    $0\n}"
+      },
+      {
+        "language": "JavaScript",
+        "prefix": "af",
+        "name": "arrow function",
+        "body": "const ${1:name} = (${2}) => {\n    $0\n};"
+      },
+      {
+        "language": "JavaScript",
+        "prefix": "log",
+        "name": "console.log",
+        "body": "console.log(${1});$0"
+      },
+      {
+        "language": "JavaScript",
+        "prefix": "for",
+        "name": "for loop",
+        "body": "for (let ${1:i} = 0; ${1:i} < ${2:n}; ${1:i}++) {\n    $0\n}"
+      },
+      {
+        "language": "TypeScript",
+        "prefix": "log",
+        "name": "console.log",
+        "body": "console.log(${1});$0"
+      },
+      {
+        "language": "C",
+        "prefix": "main",
+        "name": "main",
+        "body": "#include <stdio.h>\n\nint main(void) {\n    $0\n    return 0;\n}"
+      },
+      {
+        "language": "C++",
+        "prefix": "main",
+        "name": "main",
+        "body": "#include <iostream>\n\nint main() {\n    $0\n    return 0;\n}"
+      },
+      {
+        "language": "Lua",
+        "prefix": "fn",
+        "name": "function",
+        "body": "local function ${1:name}(${2})\n    $0\nend"
+      },
+      {
+        "language": "Lua",
+        "prefix": "for",
+        "name": "for loop",
+        "body": "for ${1:i} = 1, ${2:n} do\n    $0\nend"
+      },
+      {
+        "language": "Lua",
+        "prefix": "love",
+        "name": "LÖVE callbacks",
+        "body": "function love.load()\n    $0\nend\n\nfunction love.update(dt)\nend\n\nfunction love.draw()\nend"
+      },
+      {
+        "language": "HTML",
+        "prefix": "html5",
+        "name": "HTML5 page",
+        "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <title>${1:Title}</title>\n</head>\n<body>\n    $0\n</body>\n</html>"
+      },
+      {
+        "language": "Shell",
+        "prefix": "shebang",
+        "name": "bash header",
+        "body": "#!/usr/bin/env bash\nset -euo pipefail\n\n$0"
+      },
+      {
+        "language": "*",
+        "prefix": "todo",
+        "name": "TODO comment",
+        "body": "TODO(${1:name}): ${2:what}$0"
+      }
+    ]
+  }
+}

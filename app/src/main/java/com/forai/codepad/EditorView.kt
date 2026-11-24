@@ -15,6 +15,7 @@ import android.text.Editable
 import android.text.InputFilter
 import android.text.Layout
 import android.text.Selection
+import android.text.Spannable
 import android.text.Spanned
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -26,6 +27,7 @@ import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
@@ -116,6 +118,9 @@ class EditorView @JvmOverloads constructor(
     var onEdited: (() -> Unit)? = null
     var onZoom: ((Float) -> Unit)? = null
 
+    /** Called when Tab is pressed with no selection; return true if it consumed the key (snippet expansion). */
+    var tabHook: (() -> Boolean)? = null
+
     // ---- internals ----
     /** The editable text (never null once the view exists). */
     val buffer: Editable get() = text!!
@@ -142,6 +147,8 @@ class EditorView @JvmOverloads constructor(
     private var bmA = -1
     private var bmB = -1
     private var rawEdit = false
+    private var lastDelAt = 0L
+    private var lastDelText = ""
 
     private var thumbUntil = 0L
     private var draggingThumb = false
@@ -218,6 +225,10 @@ class EditorView @JvmOverloads constructor(
                 val added = if (count > 0) sb.subSequence(start, start + count).toString() else ""
                 val removed = pendingBefore
                 undoManager.record(start, removed, added)
+                if (removed.isNotEmpty() && added.isEmpty()) {
+                    lastDelAt = SystemClock.uptimeMillis()
+                    lastDelText = removed
+                }
                 if (!linesDirty) {
                     if (added.indexOf('\n') >= 0 || removed.indexOf('\n') >= 0) {
                         linesDirty = true
@@ -251,15 +262,37 @@ class EditorView @JvmOverloads constructor(
         }
     }
 
-    private fun postCaret(pos: Int) {
-        post { setSelection(pos.coerceIn(0, buffer.length)) }
+    /**
+     * Moves the caret after the filter's edit has been applied. [bump] is how many text changes the edit
+     * will cause (1 for an insertion, 0 for a swallowed key). If anything else edited the text in between,
+     * the move is dropped so it can never jump the caret to a stale position.
+     */
+    private fun postCaret(pos: Int, bump: Int = 1) {
+        val v = editVersion
+        post {
+            if (editVersion == v + bump) setSelection(pos.coerceIn(0, buffer.length))
+        }
     }
 
     private fun postSelect(a: Int, b: Int) {
+        val v = editVersion
         post {
-            val n = buffer.length
-            setSelection(a.coerceIn(0, n), b.coerceIn(0, n))
+            if (editVersion == v + 1) {
+                val n = buffer.length
+                setSelection(a.coerceIn(0, n), b.coerceIn(0, n))
+            }
         }
+    }
+
+    /** True when the replaced range overlaps text the keyboard is still composing (i.e. it is re-typing, not the user). */
+    private fun touchesComposing(dest: CharSequence, ds: Int, de: Int): Boolean {
+        val sp = dest as? Spannable ?: return false
+        val cs = BaseInputConnection.getComposingSpanStart(sp)
+        val ce = BaseInputConnection.getComposingSpanEnd(sp)
+        if (cs < 0 || ce < 0) return false
+        val lo = min(cs, ce)
+        val hi = max(cs, ce)
+        return ds < hi && de > lo
     }
 
     private fun isCloseChar(c: Char): Boolean {
@@ -294,13 +327,18 @@ class EditorView @JvmOverloads constructor(
     }
 
     private fun handlePair(c: Char, dest: CharSequence, dstart: Int, dend: Int): CharSequence? {
+        // Only react to a character the user really typed. Keyboards re-send text while editing
+        // (e.g. after backspace); those edits must never create new brackets or quotes.
+        if (touchesComposing(dest, dstart, dend)) return null
+        if (SystemClock.uptimeMillis() - lastDelAt < 250L && lastDelText.indexOf(c) >= 0) return null
         val hasSel = dend > dstart
+        if (hasSel && (Selection.getSelectionStart(dest) != dstart || Selection.getSelectionEnd(dest) != dend)) return null
         val next: Char? = if (dend < dest.length) dest[dend] else null
         val prev: Char? = if (dstart > 0) dest[dstart - 1] else null
 
         // typing a closing character that is already there: just step over it
         if (!hasSel && next == c && isCloseChar(c)) {
-            postCaret(dstart + 1)
+            postCaret(dstart + 1, 0)
             return ""
         }
 
@@ -732,6 +770,14 @@ class EditorView @JvmOverloads constructor(
     }
 
     // ---- editing helpers ----
+    /** Replaces the selection (or inserts at the caret) without auto-close / auto-indent side effects. */
+    fun replaceSelectionRaw(str: String) {
+        val a = max(0, min(selectionStart, selectionEnd))
+        val b = max(0, max(selectionStart, selectionEnd))
+        replaceRange(a, b, str)
+        setSelection(min(a + str.length, buffer.length))
+    }
+
     fun insertAtCaret(s: String) {
         val t = buffer
         val a = max(0, min(selectionStart, selectionEnd))
@@ -744,6 +790,7 @@ class EditorView @JvmOverloads constructor(
         val t = buffer
         val a = max(0, min(selectionStart, selectionEnd))
         val b = max(0, max(selectionStart, selectionEnd))
+        if (a == b && tabHook?.invoke() == true) return
         if (t.subSequence(a, b).indexOf('\n') >= 0) {
             indentSelection(false)
             return

@@ -1,0 +1,207 @@
+{
+  "id": "codepad.termux-runners",
+  "name": "Termux Runners",
+  "version": "1.0.0",
+  "publisher": "CodePad",
+  "description": "Run files with the real interpreters and compilers installed in Termux. Output appears in the Output panel. Interactive variants open a Termux session.",
+  "engine": 1,
+  "builtin": true,
+  "permissions": [
+    "run.termux"
+  ],
+  "contributes": {
+    "runners": [
+      {
+        "id": "python",
+        "title": "Python",
+        "languages": [
+          "Python"
+        ],
+        "extensions": [
+          "py"
+        ],
+        "type": "termux",
+        "command": "python \"${file}\"",
+        "hint": "pkg install python"
+      },
+      {
+        "id": "python-terminal",
+        "title": "Python (interactive, Termux window)",
+        "languages": [
+          "Python"
+        ],
+        "extensions": [
+          "py"
+        ],
+        "type": "termux",
+        "command": "python \"${file}\"",
+        "hint": "pkg install python",
+        "mode": "terminal"
+      },
+      {
+        "id": "node",
+        "title": "Node.js",
+        "languages": [
+          "JavaScript"
+        ],
+        "extensions": [
+          "js",
+          "mjs",
+          "cjs"
+        ],
+        "type": "termux",
+        "command": "node \"${file}\"",
+        "hint": "pkg install nodejs"
+      },
+      {
+        "id": "node-terminal",
+        "title": "Node.js (interactive, Termux window)",
+        "languages": [
+          "JavaScript"
+        ],
+        "extensions": [
+          "js",
+          "mjs",
+          "cjs"
+        ],
+        "type": "termux",
+        "command": "node \"${file}\"",
+        "hint": "pkg install nodejs",
+        "mode": "terminal"
+      },
+      {
+        "id": "c",
+        "title": "C (clang)",
+        "languages": [
+          "C"
+        ],
+        "extensions": [
+          "c"
+        ],
+        "type": "termux",
+        "command": "clang \"${file}\" -o \"${fileDir}/${fileBase}.out\" && \"${fileDir}/${fileBase}.out\"",
+        "hint": "pkg install clang"
+      },
+      {
+        "id": "cpp",
+        "title": "C++ (clang++)",
+        "languages": [
+          "C++"
+        ],
+        "extensions": [
+          "cpp",
+          "cc",
+          "cxx"
+        ],
+        "type": "termux",
+        "command": "clang++ -std=c++17 \"${file}\" -o \"${fileDir}/${fileBase}.out\" && \"${fileDir}/${fileBase}.out\"",
+        "hint": "pkg install clang"
+      },
+      {
+        "id": "java",
+        "title": "Java (single file)",
+        "languages": [
+          "Java"
+        ],
+        "extensions": [
+          "java"
+        ],
+        "type": "termux",
+        "command": "java \"${file}\"",
+        "hint": "pkg install openjdk-17"
+      },
+      {
+        "id": "go",
+        "title": "Go",
+        "languages": [
+          "Go"
+        ],
+        "extensions": [
+          "go"
+        ],
+        "type": "termux",
+        "command": "go run \"${file}\"",
+        "hint": "pkg install golang"
+      },
+      {
+        "id": "rust",
+        "title": "Rust",
+        "languages": [
+          "Rust"
+        ],
+        "extensions": [
+          "rs"
+        ],
+        "type": "termux",
+        "command": "rustc \"${file}\" -o \"${fileDir}/${fileBase}.out\" && \"${fileDir}/${fileBase}.out\"",
+        "hint": "pkg install rust"
+      },
+      {
+        "id": "lua",
+        "title": "Lua 5.4",
+        "languages": [
+          "Lua"
+        ],
+        "extensions": [
+          "lua"
+        ],
+        "type": "termux",
+        "command": "lua5.4 \"${file}\"",
+        "hint": "pkg install lua54"
+      },
+      {
+        "id": "luajit",
+        "title": "LuaJIT",
+        "languages": [
+          "Lua"
+        ],
+        "extensions": [
+          "lua"
+        ],
+        "type": "termux",
+        "command": "luajit \"${file}\"",
+        "hint": "pkg install luajit"
+      },
+      {
+        "id": "ruby",
+        "title": "Ruby",
+        "languages": [
+          "Ruby"
+        ],
+        "extensions": [
+          "rb"
+        ],
+        "type": "termux",
+        "command": "ruby \"${file}\"",
+        "hint": "pkg install ruby"
+      },
+      {
+        "id": "php",
+        "title": "PHP",
+        "languages": [
+          "PHP"
+        ],
+        "extensions": [
+          "php"
+        ],
+        "type": "termux",
+        "command": "php \"${file}\"",
+        "hint": "pkg install php"
+      },
+      {
+        "id": "bash",
+        "title": "Shell (bash)",
+        "languages": [
+          "Shell"
+        ],
+        "extensions": [
+          "sh",
+          "bash"
+        ],
+        "type": "termux",
+        "command": "bash \"${file}\"",
+        "hint": ""
+      }
+    ]
+  }
+}

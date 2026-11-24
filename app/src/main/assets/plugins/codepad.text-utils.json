@@ -1,0 +1,39 @@
+{
+  "id": "codepad.text-utils",
+  "name": "Text Utilities (script example)",
+  "version": "1.0.0",
+  "publisher": "CodePad",
+  "description": "Example of a scripted plugin: commands written in JavaScript that use the CodePad API. Open it in the Command Palette.",
+  "engine": 1,
+  "builtin": true,
+  "permissions": [
+    "editor.read",
+    "editor.write",
+    "ui"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "text-utils.datetime",
+        "title": "Text: Insert date and time"
+      },
+      {
+        "id": "text-utils.count",
+        "title": "Text: Count words and lines"
+      },
+      {
+        "id": "text-utils.reverse-lines",
+        "title": "Text: Reverse selected lines"
+      },
+      {
+        "id": "text-utils.quote",
+        "title": "Text: Quote selected lines"
+      },
+      {
+        "id": "text-utils.prefix",
+        "title": "Text: Prefix selected lines..."
+      }
+    ]
+  },
+  "script": "codepad.commands.register('text-utils.datetime', function () {\n  codepad.editor.replaceSelection(new Date().toLocaleString());\n});\ncodepad.commands.register('text-utils.count', function () {\n  var t = codepad.editor.getSelectedText() || codepad.editor.getText();\n  var words = t.trim() ? t.trim().split(/\\s+/).length : 0;\n  var lines = t ? t.split('\\n').length : 0;\n  codepad.window.showMessage(words + ' words, ' + t.length + ' characters, ' + lines + ' lines');\n});\ncodepad.commands.register('text-utils.reverse-lines', function () {\n  var t = codepad.editor.getSelectedText();\n  if (!t) { codepad.window.showMessage('Select some lines first'); return; }\n  codepad.editor.replaceSelection(t.split('\\n').reverse().join('\\n'));\n});\ncodepad.commands.register('text-utils.quote', function () {\n  var t = codepad.editor.getSelectedText();\n  if (!t) { codepad.window.showMessage('Select some text first'); return; }\n  codepad.editor.replaceSelection(t.split('\\n').map(function (l) { return '> ' + l; }).join('\\n'));\n});\ncodepad.commands.register('text-utils.prefix', function () {\n  codepad.window.showInputBox('Prefix to add to each selected line', function (p) {\n    if (p === null) return;\n    var t = codepad.editor.getSelectedText();\n    if (!t) { codepad.window.showMessage('Select some lines first'); return; }\n    codepad.editor.replaceSelection(t.split('\\n').map(function (l) { return p + l; }).join('\\n'));\n  });\n});\n"
+}

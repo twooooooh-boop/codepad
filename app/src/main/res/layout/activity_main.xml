@@ -11,13 +11,37 @@
         android:layout_width="match_parent"
         android:layout_height="48dp" />
 
-    <com.google.android.material.tabs.TabLayout
-        android:id="@+id/tabs"
+    <LinearLayout
+        android:id="@+id/tab_row"
         android:layout_width="match_parent"
         android:layout_height="38dp"
-        app:tabIndicatorHeight="2dp"
-        app:tabMinWidth="0dp"
-        app:tabMode="scrollable" />
+        android:orientation="horizontal">
+
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/tabs"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            app:tabIndicatorHeight="2dp"
+            app:tabMinWidth="0dp"
+            app:tabMode="scrollable" />
+
+        <ImageView
+            android:id="@+id/btn_new"
+            android:layout_width="40dp"
+            android:layout_height="match_parent"
+            android:contentDescription="New file"
+            android:padding="9dp"
+            android:src="@drawable/ic_add" />
+
+        <ImageView
+            android:id="@+id/btn_open"
+            android:layout_width="40dp"
+            android:layout_height="match_parent"
+            android:contentDescription="Open file"
+            android:padding="9dp"
+            android:src="@drawable/ic_open" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/find_bar"
@@ -147,6 +171,75 @@
         android:inputType="textMultiLine|textNoSuggestions"
         android:scrollbars="vertical"
         android:textSize="14sp" />
+
+    <LinearLayout
+        android:id="@+id/output_panel"
+        android:layout_width="match_parent"
+        android:layout_height="190dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="34dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="10dp">
+
+            <TextView
+                android:id="@+id/output_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="Output"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/output_rerun"
+                android:layout_width="44dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="▶"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/output_clear"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="Clear"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/output_close"
+                android:layout_width="44dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="✕"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <ScrollView
+            android:id="@+id/output_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/output_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="10dp"
+                android:textIsSelectable="true"
+                android:textSize="12sp"
+                android:typeface="monospace" />
+        </ScrollView>
+    </LinearLayout>
 
     <HorizontalScrollView
         android:id="@+id/symbol_scroll"

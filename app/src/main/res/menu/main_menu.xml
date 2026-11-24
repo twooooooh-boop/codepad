@@ -2,17 +2,25 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
-    <item android:id="@+id/m_open" android:icon="@drawable/ic_open" android:title="Open" app:showAsAction="always" />
+    <item android:id="@+id/m_run" android:icon="@drawable/ic_play" android:title="Run" app:showAsAction="always" />
     <item android:id="@+id/m_save" android:icon="@drawable/ic_save" android:title="Save" app:showAsAction="always" />
     <item android:id="@+id/m_undo" android:icon="@drawable/ic_undo" android:title="Undo" app:showAsAction="always" />
     <item android:id="@+id/m_redo" android:icon="@drawable/ic_redo" android:title="Redo" app:showAsAction="always" />
     <item android:id="@+id/m_find" android:icon="@drawable/ic_search" android:title="Find and replace" app:showAsAction="always" />
+    <item android:id="@+id/m_settings" android:icon="@drawable/ic_settings" android:title="Settings" app:showAsAction="always" />
 
+    <item android:id="@+id/m_palette" android:title="Command palette…" app:showAsAction="never" />
+    <item android:id="@+id/m_runwith" android:title="Run with…" app:showAsAction="never" />
+    <item android:id="@+id/m_output" android:title="Show / hide output" app:showAsAction="never" />
+    <item android:id="@+id/m_snippet" android:title="Insert snippet…" app:showAsAction="never" />
+    <item android:id="@+id/m_plugins" android:title="Plugins…" app:showAsAction="never" />
+    <item android:id="@+id/m_open" android:title="Open file…" app:showAsAction="never" />
     <item android:id="@+id/m_new" android:title="New file" app:showAsAction="never" />
     <item android:id="@+id/m_save_as" android:title="Save as…" app:showAsAction="never" />
     <item android:id="@+id/m_recent" android:title="Recent files…" app:showAsAction="never" />
     <item android:id="@+id/m_close" android:title="Close tab" app:showAsAction="never" />
     <item android:id="@+id/m_goto" android:title="Go to line…" app:showAsAction="never" />
+    <item android:id="@+id/m_bracket" android:title="Jump to matching bracket" app:showAsAction="never" />
     <item android:id="@+id/m_selline" android:title="Select line" app:showAsAction="never" />
     <item android:id="@+id/m_dup" android:title="Duplicate line" app:showAsAction="never" />
     <item android:id="@+id/m_del" android:title="Delete line" app:showAsAction="never" />
@@ -21,6 +29,7 @@
     <item android:id="@+id/m_comment" android:title="Toggle comment" app:showAsAction="never" />
     <item android:id="@+id/m_indent" android:title="Indent" app:showAsAction="never" />
     <item android:id="@+id/m_unindent" android:title="Unindent" app:showAsAction="never" />
+    <item android:id="@+id/m_tools" android:title="Text tools…" app:showAsAction="never" />
     <item android:id="@+id/m_wrap" android:checkable="true" android:title="Word wrap" app:showAsAction="never" />
     <item android:id="@+id/m_lines" android:checkable="true" android:title="Line numbers" app:showAsAction="never" />
     <item android:id="@+id/m_autoindent" android:checkable="true" android:title="Auto-indent" app:showAsAction="never" />
@@ -33,7 +42,4 @@
     <item android:id="@+id/m_enc" android:title="Encoding…" app:showAsAction="never" />
     <item android:id="@+id/m_eol" android:title="Line endings…" app:showAsAction="never" />
     <item android:id="@+id/m_share" android:title="Share text" app:showAsAction="never" />
-    <item android:id="@+id/m_tools" android:title="Text tools…" app:showAsAction="never" />
-    <item android:id="@+id/m_bracket" android:title="Jump to matching bracket" app:showAsAction="never" />
-    <item android:id="@+id/m_settings" android:title="Settings" app:showAsAction="never" />
 </menu>

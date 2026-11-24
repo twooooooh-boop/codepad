@@ -72,6 +72,11 @@ class SettingsActivity : AppCompatActivity() {
     private fun render() {
         content.removeAllViews()
 
+        header("Extensions")
+        choiceRow("Plugins", "Runners, snippets, commands and scripts") {
+            startActivity(android.content.Intent(this, PluginsActivity::class.java))
+        }
+
         header("Editor")
         choiceRow("Theme", cfg.theme ?: "Automatic (follows system)") { pickTheme() }
         choiceRow("Font size", cfg.font.toInt().toString() + " sp") { pickFont() }

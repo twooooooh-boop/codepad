@@ -1,0 +1,52 @@
+{
+  "id": "codepad.web-preview",
+  "name": "Web Preview & JS Sandbox",
+  "version": "1.0.0",
+  "publisher": "CodePad",
+  "description": "Preview HTML and Markdown, or run JavaScript instantly inside a sandbox with no network or file access. No Termux needed.",
+  "engine": 1,
+  "builtin": true,
+  "permissions": [
+    "run.sandbox"
+  ],
+  "contributes": {
+    "runners": [
+      {
+        "id": "html",
+        "title": "Preview HTML",
+        "languages": [
+          "HTML"
+        ],
+        "extensions": [
+          "html",
+          "htm"
+        ],
+        "type": "preview-html"
+      },
+      {
+        "id": "markdown",
+        "title": "Preview Markdown",
+        "languages": [
+          "Markdown"
+        ],
+        "extensions": [
+          "md",
+          "markdown"
+        ],
+        "type": "preview-markdown"
+      },
+      {
+        "id": "js-sandbox",
+        "title": "JavaScript (in-app sandbox)",
+        "languages": [
+          "JavaScript"
+        ],
+        "extensions": [
+          "js"
+        ],
+        "type": "sandbox-js",
+        "timeoutMs": 1500
+      }
+    ]
+  }
+}

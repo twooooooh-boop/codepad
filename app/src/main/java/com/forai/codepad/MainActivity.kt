@@ -12,7 +12,14 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.ImageView
+import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -146,6 +153,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         setupSymbols()
+        setupPlugins()
         applySettings()
 
         editor.onCaretMoved = { updateStatus() }
@@ -203,6 +211,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        syncPlugins()
         applySettings()
         checkExternalChange()
     }
@@ -265,6 +274,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (e.action == KeyEvent.ACTION_DOWN && e.keyCode == KeyEvent.KEYCODE_F5) {
+            runActive()
+            return true
+        }
         if (e.action == KeyEvent.ACTION_DOWN && e.isCtrlPressed) {
             when (e.keyCode) {
                 KeyEvent.KEYCODE_S -> {
@@ -278,6 +291,8 @@ class MainActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_Y -> { editor.redo(); return true }
                 KeyEvent.KEYCODE_W -> { active?.let { closeDoc(it) }; return true }
                 KeyEvent.KEYCODE_G -> { gotoLine(); return true }
+                KeyEvent.KEYCODE_ENTER -> { runActive(); return true }
+                KeyEvent.KEYCODE_P -> { if (e.isShiftPressed) { showPalette(); return true } }
                 KeyEvent.KEYCODE_D -> { editor.duplicateLines(); return true }
                 KeyEvent.KEYCODE_SLASH -> { toggleComment(); return true }
             }
@@ -318,6 +333,13 @@ class MainActivity : AppCompatActivity() {
         status.setBackgroundColor(t.bar)
         status.setTextColor((t.barFg and 0x00FFFFFF) or (0xB0 shl 24))
         symbolScroll.setBackgroundColor(t.gutterBg)
+        tabRow.setBackgroundColor(t.bar)
+        btnNew.setColorFilter(t.barFg)
+        btnOpen.setColorFilter(t.barFg)
+        outputPanel.setBackgroundColor(t.gutterBg)
+        outputText.setTextColor(t.fg)
+        outputTitle.setTextColor(t.barFg)
+        for (v in outputButtons) v.setTextColor(t.barFg)
         for (v in symbolViews) v.setTextColor(t.fg)
         findBar.setBackgroundColor(t.bar)
         for (v in findViews) v.setTextColor(t.barFg)
@@ -448,6 +470,12 @@ class MainActivity : AppCompatActivity() {
             R.id.m_tools -> showTools()
             R.id.m_bracket -> if (!editor.jumpToMatchingBracket()) toast("No matching bracket here")
             R.id.m_settings -> startActivity(Intent(this, SettingsActivity::class.java))
+            R.id.m_run -> runActive()
+            R.id.m_runwith -> runActive(true)
+            R.id.m_output -> outputPanel.visibility = if (outputPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            R.id.m_palette -> showPalette()
+            R.id.m_snippet -> pickSnippet()
+            R.id.m_plugins -> startActivity(Intent(this, PluginsActivity::class.java))
         }
         return true
     }
@@ -548,6 +576,7 @@ class MainActivity : AppCompatActivity() {
     private fun showInEditor(d: Doc) {
         editor.undoManager = d.undo
         editor.setLanguage(d.lang)
+        host.onLanguage(d.lang.name)
         editor.setContent(d.content)
         val len = editor.buffer.length
         editor.setSelection(d.selStart.coerceIn(0, len), d.selEnd.coerceIn(0, len))
@@ -893,6 +922,394 @@ class MainActivity : AppCompatActivity() {
         i.type = "text/plain"
         i.putExtra(Intent.EXTRA_TEXT, t.toString())
         startActivity(Intent.createChooser(i, "Share text"))
+    }
+
+    // ------------------------------------------------------------------ plugins / run
+
+    private lateinit var tabRow: View
+    private lateinit var btnNew: ImageView
+    private lateinit var btnOpen: ImageView
+    private lateinit var outputPanel: View
+    private lateinit var outputTitle: TextView
+    private lateinit var outputText: TextView
+    private lateinit var outputScroll: ScrollView
+    private var outputButtons: List<TextView> = emptyList()
+    private lateinit var plugins: PluginManager
+    private lateinit var host: PluginHost
+    private var pluginSig = ""
+    private var lastRun: Pair<Doc, RunnerDef>? = null
+    private var pendingTermuxRun: (() -> Unit)? = null
+    private var pendingTermuxFail: ((String) -> Unit)? = null
+    private val outputBuf = StringBuilder()
+
+    private val termuxPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val run = pendingTermuxRun
+            val fail = pendingTermuxFail
+            pendingTermuxRun = null
+            pendingTermuxFail = null
+            if (granted && run != null) {
+                run()
+            } else {
+                fail?.invoke("Permission to run commands in Termux was not granted.")
+            }
+        }
+
+    private val hostApi = object : HostApi {
+        override fun getText(): String = editor.buffer.toString()
+
+        override fun getSelectedText(): String {
+            val a = min(editor.selectionStart, editor.selectionEnd)
+            val b = max(editor.selectionStart, editor.selectionEnd)
+            return if (a >= 0 && b > a) editor.buffer.subSequence(a, b).toString() else ""
+        }
+
+        override fun replaceSelection(text: String) {
+            editor.replaceSelectionRaw(text)
+        }
+
+        override fun replaceAll(text: String) {
+            editor.replaceAllText(text)
+        }
+
+        override fun fileName(): String = active?.name ?: ""
+
+        override fun language(): String = active?.lang?.name ?: ""
+
+        override fun message(text: String, error: Boolean) {
+            toast(if (error) "Plugin: $text" else text)
+        }
+
+        override fun askInput(prompt: String, cb: (String?) -> Unit) {
+            val et = EditText(this@MainActivity)
+            et.setSingleLine()
+            var answered = false
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(prompt)
+                .setView(boxed(et))
+                .setPositiveButton("OK") { _, _ ->
+                    answered = true
+                    cb(et.text.toString())
+                }
+                .setNegativeButton("Cancel") { _, _ ->
+                    answered = true
+                    cb(null)
+                }
+                .setOnDismissListener { if (!answered) cb(null) }
+                .show()
+        }
+
+        override fun outputAppend(text: String) {
+            appendOutput(text)
+        }
+
+        override fun outputClear() {
+            clearOutput()
+        }
+
+        override fun outputShow(title: String) {
+            showOutput(title)
+        }
+
+        override fun runTermux(command: String, cb: (RunResult) -> Unit) {
+            withTermux({ msg -> cb(RunResult(-1, "", "", -1, msg)) }) {
+                TermuxRunner.run(this@MainActivity, "cd \"\$HOME\" && $command", true) { res -> cb(res) }
+            }
+        }
+    }
+
+    private fun setupPlugins() {
+        tabRow = findViewById(R.id.tab_row)
+        btnNew = findViewById(R.id.btn_new)
+        btnOpen = findViewById(R.id.btn_open)
+        outputPanel = findViewById(R.id.output_panel)
+        outputTitle = findViewById(R.id.output_title)
+        outputText = findViewById(R.id.output_text)
+        outputScroll = findViewById(R.id.output_scroll)
+        val rerun = findViewById<TextView>(R.id.output_rerun)
+        val clear = findViewById<TextView>(R.id.output_clear)
+        val close = findViewById<TextView>(R.id.output_close)
+        outputButtons = listOf(rerun, clear, close)
+        btnNew.setOnClickListener { newDoc() }
+        btnOpen.setOnClickListener { openLauncher.launch(arrayOf("*/*")) }
+        rerun.setOnClickListener { rerunLast() }
+        clear.setOnClickListener { clearOutput() }
+        close.setOnClickListener { outputPanel.visibility = View.GONE }
+
+        plugins = PluginManager(this)
+        plugins.seedBuiltins()
+        plugins.reload()
+        host = PluginHost(this, plugins, hostApi)
+        pluginSig = plugins.signature()
+        host.start()
+        editor.tabHook = { expandSnippetAtCaret() }
+    }
+
+    /** Called when returning from the Plugins screen: reload manifests and restart the script host if anything changed. */
+    private fun syncPlugins() {
+        plugins.reload()
+        val sig = plugins.signature()
+        if (sig != pluginSig) {
+            pluginSig = sig
+            host.start()
+        }
+    }
+
+    private fun showOutput(title: String) {
+        outputTitle.text = title
+        outputPanel.visibility = View.VISIBLE
+    }
+
+    private fun appendOutput(text: String) {
+        outputBuf.append(text)
+        if (outputBuf.length > 100_000) outputBuf.delete(0, outputBuf.length - 80_000)
+        outputText.text = outputBuf.toString()
+        outputScroll.post { outputScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun clearOutput() {
+        outputBuf.setLength(0)
+        outputText.text = ""
+    }
+
+    private fun runActive(forceChoose: Boolean = false) {
+        val d = active ?: return
+        syncActive()
+        val rs = plugins.runnersFor(d.name, d.lang.name)
+        if (rs.isEmpty()) {
+            toast("No runner for " + d.lang.name + ". Install one in Plugins.")
+            return
+        }
+        if (!forceChoose) {
+            val saved = cfg.prefs.getString("runner_" + d.lang.name, null)
+            val pick = rs.firstOrNull { it.key == saved } ?: if (rs.size == 1) rs[0] else null
+            if (pick != null) {
+                startRun(d, pick)
+                return
+            }
+        }
+        val names = rs.map { it.title }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Run " + d.name + " with")
+            .setItems(names) { _, which -> startRun(d, rs[which]) }
+            .show()
+    }
+
+    private fun rerunLast() {
+        val last = lastRun ?: return
+        if (last.first === active) syncActive()
+        startRun(last.first, last.second)
+    }
+
+    private fun startRun(d: Doc, r: RunnerDef) {
+        lastRun = Pair(d, r)
+        cfg.prefs.edit().putString("runner_" + d.lang.name, r.key).apply()
+        val content = d.content
+        when (r.type) {
+            RunnerType.TERMUX -> execTermux(d, r)
+            RunnerType.SANDBOX_JS -> {
+                showOutput(r.title + " - " + d.name)
+                clearOutput()
+                appendOutput("Running...\n")
+                SandboxRunner.runJs(this, content, r.timeoutMs, { line -> appendOutput(line + "\n") }) {
+                    appendOutput("\n[finished]\n")
+                }
+            }
+            RunnerType.PREVIEW_HTML -> {
+                val viewport = "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                PreviewActivity.html = if (content.contains("viewport", ignoreCase = true)) content else viewport + content
+                PreviewActivity.title = d.name
+                startActivity(Intent(this, PreviewActivity::class.java))
+            }
+            RunnerType.PREVIEW_MD -> {
+                PreviewActivity.html = Markdown.toHtml(content)
+                PreviewActivity.title = d.name
+                startActivity(Intent(this, PreviewActivity::class.java))
+            }
+        }
+    }
+
+    private fun withTermux(onFail: (String) -> Unit, then: () -> Unit) {
+        if (!TermuxRunner.installed(this)) {
+            onFail("Termux is not installed. Get it from F-Droid (not the Play Store).")
+            return
+        }
+        if (!TermuxRunner.hasPermission(this)) {
+            pendingTermuxRun = then
+            pendingTermuxFail = onFail
+            termuxPermLauncher.launch(TermuxRunner.PERM)
+            return
+        }
+        then()
+    }
+
+    private fun execTermux(d: Doc, r: RunnerDef) {
+        if (d.content.length > TermuxRunner.MAX_CHARS) {
+            showOutput(r.title)
+            appendOutput("This file is too large to send to Termux (limit " + TermuxRunner.MAX_CHARS / 1000 + " KB).\n")
+            return
+        }
+        val title = r.title + " - " + d.name
+        val onFail = { msg: String ->
+            showOutput(title)
+            appendOutput("\n$msg\n\n" + TermuxRunner.SETUP_HELP)
+        }
+        withTermux(onFail) {
+            val interactive = r.mode == "terminal"
+            showOutput(title)
+            clearOutput()
+            appendOutput(if (interactive) "Opening a Termux session...\n" else "Running...\n")
+            val script = TermuxRunner.buildScript(d.name, d.content, r.command, interactive)
+            val waiting = Runnable {
+                appendOutput("\n...still waiting for Termux.\n" + TermuxRunner.SETUP_HELP)
+            }
+            if (!interactive) ui.postDelayed(waiting, 25000L)
+            TermuxRunner.run(this, script, !interactive) { res ->
+                ui.removeCallbacks(waiting)
+                showResult(res, r)
+            }
+        }
+    }
+
+    private fun showResult(res: RunResult, r: RunnerDef) {
+        if (res.error != null) {
+            appendOutput("\n" + res.error + "\n")
+            return
+        }
+        if (res.stdout.isNotEmpty()) appendOutput(res.stdout.trimEnd('\n') + "\n")
+        if (res.stderr.isNotEmpty()) appendOutput(res.stderr.trimEnd('\n') + "\n")
+        if (res.id >= 0) appendOutput("\n[exit code " + res.exitCode + "]\n")
+        if ((res.exitCode == 127 || res.stderr.contains("not found")) && r.hint.isNotEmpty()) {
+            appendOutput("Looks like it is not installed. In Termux run:  " + r.hint + "\n")
+        }
+    }
+
+    // ------------------------------------------------------------------ snippets
+
+    private fun insertSnippetAt(s: SnippetDef, from: Int, to: Int) {
+        val t = editor.buffer
+        val ls = editor.lineStart(from)
+        var k = ls
+        while (k < from && (t[k] == ' ' || t[k] == '\t')) k++
+        val indent = t.subSequence(ls, k).toString()
+        val ex = SnippetEngine.expand(s.body, indent)
+        editor.replaceRange(from, to, ex.text)
+        editor.setSelection(from + ex.selStart, from + ex.selEnd)
+    }
+
+    private fun insertSnippetAtCaret(s: SnippetDef) {
+        val a = max(0, min(editor.selectionStart, editor.selectionEnd))
+        val b = max(0, max(editor.selectionStart, editor.selectionEnd))
+        insertSnippetAt(s, a, b)
+    }
+
+    private fun pickSnippet() {
+        val d = active ?: return
+        val list = plugins.snippetsFor(d.lang.name)
+        if (list.isEmpty()) {
+            toast("No snippets for " + d.lang.name)
+            return
+        }
+        val names = list.map { it.prefix + "  -  " + it.name }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Insert snippet")
+            .setItems(names) { _, which -> insertSnippetAtCaret(list[which]) }
+            .show()
+    }
+
+    /** Tab after a snippet prefix expands it. */
+    private fun expandSnippetAtCaret(): Boolean {
+        val d = active ?: return false
+        val pos = editor.selectionStart
+        if (pos <= 0 || pos != editor.selectionEnd) return false
+        val t = editor.buffer
+        var s = pos
+        while (s > 0 && (t[s - 1].isLetterOrDigit() || t[s - 1] == '_')) s--
+        if (s == pos) return false
+        val word = t.subSequence(s, pos).toString()
+        val sn = plugins.snippetsFor(d.lang.name).firstOrNull { it.prefix == word } ?: return false
+        insertSnippetAt(sn, s, pos)
+        return true
+    }
+
+    // ------------------------------------------------------------------ command palette
+
+    private class PaletteItem(val title: String, val action: () -> Unit)
+
+    private fun showPalette() {
+        val items = ArrayList<PaletteItem>()
+        val d = active
+        if (d != null) {
+            for (r in plugins.runnersFor(d.name, d.lang.name)) {
+                items.add(PaletteItem("Run: " + r.title) {
+                    syncActive()
+                    startRun(d, r)
+                })
+            }
+            for (sn in plugins.snippetsFor(d.lang.name)) {
+                items.add(PaletteItem("Snippet: " + sn.name + "  (" + sn.prefix + ")") { insertSnippetAtCaret(sn) })
+            }
+        }
+        for (c in plugins.commands()) {
+            items.add(PaletteItem(c.title) {
+                val rid = c.runner
+                if (rid != null) {
+                    val rd = plugins.runner(c.pluginId, rid)
+                    if (rd != null && d != null) {
+                        syncActive()
+                        startRun(d, rd)
+                    }
+                } else {
+                    host.runCommand(c.pluginId, c.id)
+                }
+            })
+        }
+        val menu = toolbar.menu
+        for (i in 0 until menu.size()) {
+            val mi = menu.getItem(i)
+            if (mi.itemId == R.id.m_palette) continue
+            val t = mi.title?.toString() ?: continue
+            items.add(PaletteItem(t) { onMenu(mi.itemId) })
+        }
+
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(16), dp(8), dp(16), 0)
+        val input = EditText(this)
+        input.hint = "Type a command"
+        input.setSingleLine()
+        box.addView(input)
+        val shown = ArrayList<PaletteItem>(items)
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, shown.map { it.title }.toMutableList())
+        val list = ListView(this)
+        list.adapter = adapter
+        box.addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(320)))
+        val dlg = MaterialAlertDialogBuilder(this).setTitle("Command palette").setView(box).create()
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val words = (s?.toString() ?: "").trim().lowercase().split(' ').filter { it.isNotEmpty() }
+                shown.clear()
+                for (it2 in items) {
+                    val tl = it2.title.lowercase()
+                    if (words.all { w -> tl.contains(w) }) shown.add(it2)
+                }
+                adapter.clear()
+                adapter.addAll(shown.map { it.title })
+                adapter.notifyDataSetChanged()
+            }
+        })
+        list.setOnItemClickListener { _, _, pos, _ ->
+            if (pos in 0 until shown.size) {
+                val chosen = shown[pos]
+                dlg.dismiss()
+                chosen.action()
+            }
+        }
+        dlg.show()
+        dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        input.requestFocus()
     }
 
     // ------------------------------------------------------------------ text tools
