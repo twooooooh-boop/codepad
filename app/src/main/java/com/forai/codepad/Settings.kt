@@ -23,7 +23,7 @@ class AppSettings(ctx: Context) {
 
         private val KEYS = listOf(
             "theme", "font", "wrap", "lines", "indent", "tabsize", "spaces", "autosave",
-            "autoclose", "bracket", "guides", "trim", "finalnl", "pairs", "ws", "pairbs"
+            "autoclose", "bracket", "guides", "trim", "finalnl", "pairs", "ws", "pairbs", "smoothcaret", "smoothsel"
         )
     }
 
@@ -80,6 +80,14 @@ class AppSettings(ctx: Context) {
     var pairBackspace: Boolean
         get() = prefs.getBoolean("pairbs", true)
         set(v) = prefs.edit().putBoolean("pairbs", v).apply()
+
+    var smoothCaret: Boolean
+        get() = prefs.getBoolean("smoothcaret", false)
+        set(v) = prefs.edit().putBoolean("smoothcaret", v).apply()
+
+    var smoothSelection: Boolean
+        get() = prefs.getBoolean("smoothsel", false)
+        set(v) = prefs.edit().putBoolean("smoothsel", v).apply()
 
     var trimOnSave: Boolean
         get() = prefs.getBoolean("trim", false)
@@ -139,6 +147,8 @@ class AppSettings(ctx: Context) {
         o.put("bracketMatching", bracketMatch)
         o.put("indentGuides", guides)
         o.put("showWhitespace", showWhitespace)
+        o.put("smoothCaret", smoothCaret)
+        o.put("smoothSelection", smoothSelection)
         o.put("smartBackspace", pairBackspace)
         o.put("trimTrailingOnSave", trimOnSave)
         o.put("finalNewlineOnSave", finalNewline)
@@ -162,6 +172,8 @@ class AppSettings(ctx: Context) {
         if (o.has("bracketMatching")) { bracketMatch = o.getBoolean("bracketMatching"); n++ }
         if (o.has("indentGuides")) { guides = o.getBoolean("indentGuides"); n++ }
         if (o.has("showWhitespace")) { showWhitespace = o.getBoolean("showWhitespace"); n++ }
+        if (o.has("smoothCaret")) { smoothCaret = o.getBoolean("smoothCaret"); n++ }
+        if (o.has("smoothSelection")) { smoothSelection = o.getBoolean("smoothSelection"); n++ }
         if (o.has("smartBackspace")) { pairBackspace = o.getBoolean("smartBackspace"); n++ }
         if (o.has("trimTrailingOnSave")) { trimOnSave = o.getBoolean("trimTrailingOnSave"); n++ }
         if (o.has("finalNewlineOnSave")) { finalNewline = o.getBoolean("finalNewlineOnSave"); n++ }

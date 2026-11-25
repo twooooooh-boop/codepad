@@ -2,6 +2,7 @@ package com.forai.codepad
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -35,6 +36,7 @@ import android.widget.OverScroller
 import androidx.appcompat.widget.AppCompatEditText
 import java.util.concurrent.Executors
 import java.util.regex.Pattern
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -82,6 +84,22 @@ class EditorView @JvmOverloads constructor(
     var useSpaces: Boolean = true
     var autoClose: Boolean = true
     var smartBackspace: Boolean = true
+
+    var smoothCaret: Boolean = false
+        set(value) {
+            field = value
+            updateCursorDrawable()
+            invalidate()
+        }
+
+    var smoothSelection: Boolean = false
+        set(value) {
+            field = value
+            val t = edTheme
+            if (t != null) highlightColor = if (value) Color.TRANSPARENT else t.selection
+            animInit = false
+            invalidate()
+        }
 
     var showWhitespace: Boolean = false
         set(value) {
@@ -148,6 +166,18 @@ class EditorView @JvmOverloads constructor(
     private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bubbleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val wsPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val caretPaint = Paint()
+    private val selPaint = Paint()
+    private val selPath = Path()
+    private var caretInit = false
+    private var caretX = 0f
+    private var caretTop = 0f
+    private var caretBottom = 0f
+    private var caretTargetPos = -1
+    private var caretMovedAt = 0L
+    private var animInit = false
+    private var animS = 0f
+    private var animE = 0f
 
     private var pairsSorted: List<PairDef> = emptyList()
     private var openChars = "([{"
@@ -466,7 +496,9 @@ class EditorView @JvmOverloads constructor(
     private fun applyTheme(t: EditorTheme) {
         setBackgroundColor(t.bg)
         setTextColor(t.fg)
-        highlightColor = t.selection
+        highlightColor = if (smoothSelection) Color.TRANSPARENT else t.selection
+        caretPaint.color = t.cursor
+        selPaint.color = t.selection
         gutterBgPaint.color = t.gutterBg
         dividerPaint.color = (t.gutterFg and 0x00FFFFFF) or 0x40000000
         linePaint.color = t.currentLine
@@ -476,16 +508,7 @@ class EditorView @JvmOverloads constructor(
         bracketBadPaint.color = 0x66FF5555
         bubbleTextPaint.color = t.bg
         wsPaint.color = (t.gutterFg and 0x00FFFFFF) or 0x90000000.toInt()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val d = GradientDrawable()
-                d.setColor(t.cursor)
-                d.setSize(max(2, dp(2f).toInt()), 0)
-                setTextCursorDrawable(d)
-            } catch (e: Throwable) {
-                // keep default cursor
-            }
-        }
+        updateCursorDrawable()
         scheduleSpans(0L)
         invalidate()
     }
@@ -699,6 +722,7 @@ class EditorView @JvmOverloads constructor(
                 val line = l.getLineForOffset(a)
                 canvas.drawRect(sx, top + l.getLineTop(line), sx + width, top + l.getLineBottom(line), linePaint)
             }
+            if (smoothSelection) drawSmoothSelection(canvas, l)
             if (showGuides) drawGuides(canvas, l)
             if (showWhitespace) drawWhitespace(canvas, l)
             if (bmA >= 0) {
@@ -715,6 +739,7 @@ class EditorView @JvmOverloads constructor(
             }
         }
         super.onDraw(canvas)
+        if (smoothCaretActive() && l != null && th != null) drawSmoothCaret(canvas, l)
         if (showLineNumbers && l != null && th != null) drawGutter(canvas, l, th)
         if (th != null) drawThumb(canvas, l)
     }
@@ -1130,6 +1155,114 @@ class EditorView @JvmOverloads constructor(
             val y2 = (top + l.getLineBottom(row)).toFloat()
             for (x in g) canvas.drawRect(left + x, y1, left + x + w, y2, guidePaint)
         }
+    }
+
+    // ---- smooth caret / selection ----
+    private fun smoothCaretActive(): Boolean = smoothCaret && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
+    /** With the smooth caret on, the system caret is made invisible and we draw our own, animated one. */
+    private fun updateCursorDrawable() {
+        val t = edTheme ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val d = GradientDrawable()
+                d.setColor(if (smoothCaretActive()) Color.TRANSPARENT else t.cursor)
+                d.setSize(max(2, dp(2f).toInt()), 0)
+                setTextCursorDrawable(d)
+            } catch (e: Throwable) {
+                // keep the default cursor
+            }
+        }
+        caretInit = false
+    }
+
+    private fun drawSmoothCaret(canvas: Canvas, l: Layout) {
+        val a = selectionStart
+        if (!isFocused || a < 0 || a != selectionEnd) {
+            caretInit = false
+            return
+        }
+        val line = l.getLineForOffset(a)
+        val tx = compoundPaddingLeft + l.getPrimaryHorizontal(a)
+        val tTop = (extendedPaddingTop + l.getLineTop(line)).toFloat()
+        val tBot = (extendedPaddingTop + l.getLineBottom(line)).toFloat()
+        val now = SystemClock.uptimeMillis()
+        if (!caretInit) {
+            caretX = tx
+            caretTop = tTop
+            caretBottom = tBot
+            caretInit = true
+            caretMovedAt = now
+            caretTargetPos = a
+        } else {
+            if (a != caretTargetPos) {
+                caretTargetPos = a
+                caretMovedAt = now
+            }
+            val dx = tx - caretX
+            val dt = tTop - caretTop
+            val db = tBot - caretBottom
+            if (abs(dx) < 0.5f && abs(dt) < 0.5f && abs(db) < 0.5f) {
+                caretX = tx
+                caretTop = tTop
+                caretBottom = tBot
+            } else {
+                caretX += dx * 0.45f
+                caretTop += dt * 0.45f
+                caretBottom += db * 0.45f
+                postInvalidateOnAnimation()
+            }
+        }
+        val moving = abs(tx - caretX) > 0.5f || abs(tTop - caretTop) > 0.5f
+        val visible = moving || ((now - caretMovedAt) / 530L) % 2L == 0L
+        if (visible) canvas.drawRect(caretX, caretTop, caretX + max(2f, dp(2f)), caretBottom, caretPaint)
+        if (!moving) postInvalidateDelayed(265L)
+    }
+
+    private fun drawSmoothSelection(canvas: Canvas, l: Layout) {
+        val a = min(selectionStart, selectionEnd)
+        val b = max(selectionStart, selectionEnd)
+        if (a < 0 || a == b) {
+            animInit = false
+            return
+        }
+        val huge = b - a > 20000
+        if (!animInit) {
+            animS = a.toFloat()
+            animE = if (huge) b.toFloat() else a.toFloat()
+            animInit = true
+        }
+        if (huge) {
+            animS = a.toFloat()
+            animE = b.toFloat()
+        }
+        var moving = false
+        val ds = a - animS
+        val de = b - animE
+        if (abs(ds) < 0.5f) {
+            animS = a.toFloat()
+        } else {
+            animS += ds * 0.35f
+            moving = true
+        }
+        if (abs(de) < 0.5f) {
+            animE = b.toFloat()
+        } else {
+            animE += de * 0.35f
+            moving = true
+        }
+        val n = buffer.length
+        val s0 = Math.round(animS).coerceIn(0, n)
+        val e0 = Math.round(animE).coerceIn(0, n)
+        if (e0 > s0) {
+            selPath.reset()
+            l.getSelectionPath(s0, e0, selPath)
+            canvas.save()
+            canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+            canvas.drawPath(selPath, selPaint)
+            canvas.restore()
+        }
+        if (moving) postInvalidateOnAnimation()
     }
 
     // ---- whitespace markers ----

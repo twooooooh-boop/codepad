@@ -13,6 +13,8 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.Editable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -20,10 +22,13 @@ import android.text.TextPaint
 import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
 import android.text.TextWatcher
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.BaseAdapter
+import android.widget.ListPopupWindow
 import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.FrameLayout
@@ -163,6 +168,7 @@ class MainActivity : AppCompatActivity() {
         status.highlightColor = Color.TRANSPARENT
         setupSymbols()
         setupPlugins()
+        setupUi2()
         applySettings()
 
         editor.onCaretMoved = { updateStatus() }
@@ -171,7 +177,9 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (find.isVisible) {
+                if (explorer.isOpen) {
+                    explorer.hide()
+                } else if (find.isVisible) {
                     find.hide()
                 } else {
                     isEnabled = false
@@ -194,7 +202,7 @@ class MainActivity : AppCompatActivity() {
             rebuildTabs()
             activate(docs[restored.second.coerceIn(0, docs.size - 1)])
         } else {
-            newDoc()
+            showEmptyState()
         }
 
         if (savedInstanceState == null) handleIntent(intent)
@@ -267,7 +275,7 @@ class MainActivity : AppCompatActivity() {
             val r = res
             val e2 = err
             ui.post {
-                if (r != null) {
+                if (r != null && r.kind == FileIO.KIND_TEXT) {
                     d.content = r.text
                     d.crlf = r.crlf
                     d.charset = r.charset
@@ -277,7 +285,7 @@ class MainActivity : AppCompatActivity() {
                     if (d === active) showInEditor(d)
                     toast("Reloaded " + d.name)
                 } else {
-                    toast("Reload failed: " + (e2?.message ?: "unknown error"))
+                    toast("Reload failed: " + (e2?.message ?: "the file is now binary or too large"))
                 }
             }
         }
@@ -296,14 +304,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 KeyEvent.KEYCODE_O -> { openLauncher.launch(arrayOf("*/*")); return true }
                 KeyEvent.KEYCODE_N -> { newDoc(); return true }
-                KeyEvent.KEYCODE_F -> { find.show(); return true }
-                KeyEvent.KEYCODE_Z -> { if (e.isShiftPressed) editor.redo() else editor.undo(); return true }
+                KeyEvent.KEYCODE_F -> { if (active == null) return true; find.show(); return true }
+                KeyEvent.KEYCODE_Z -> { if (active != null) { if (e.isShiftPressed) editor.redo() else editor.undo() }; return true }
+                KeyEvent.KEYCODE_B -> { explorer.toggle(); return true }
                 KeyEvent.KEYCODE_Y -> { editor.redo(); return true }
                 KeyEvent.KEYCODE_W -> { active?.let { closeDoc(it) }; return true }
-                KeyEvent.KEYCODE_G -> { gotoLine(); return true }
+                KeyEvent.KEYCODE_G -> { if (active == null) return true; gotoLine(); return true }
                 KeyEvent.KEYCODE_ENTER -> { runActive(); return true }
                 KeyEvent.KEYCODE_P -> { if (e.isShiftPressed) { showPalette(); return true } }
-                KeyEvent.KEYCODE_D -> { editor.duplicateLines(); return true }
+                KeyEvent.KEYCODE_D -> { if (active == null) return true; editor.duplicateLines(); return true }
                 KeyEvent.KEYCODE_SLASH -> { toggleComment(); return true }
             }
         }
@@ -316,13 +325,20 @@ class MainActivity : AppCompatActivity() {
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
         edTheme = Themes.byName(cfg.theme) ?: if (night) Themes.all[0] else Themes.all[4]
-        if (editor.wordWrap != cfg.wrap) editor.wordWrap = cfg.wrap
+        val cur = active
+        if (cur != null && cur.forceWrap) {
+            if (!editor.wordWrap) editor.wordWrap = true
+        } else if (editor.wordWrap != cfg.wrap) {
+            editor.wordWrap = cfg.wrap
+        }
         if (editor.showLineNumbers != cfg.lines) editor.showLineNumbers = cfg.lines
         editor.autoIndent = cfg.autoIndent
         editor.tabSize = cfg.tabSize
         editor.useSpaces = cfg.spaces
         editor.autoClose = cfg.autoClose
         editor.pairs = cfg.pairs
+        if (editor.smoothCaret != cfg.smoothCaret) editor.smoothCaret = cfg.smoothCaret
+        if (editor.smoothSelection != cfg.smoothSelection) editor.smoothSelection = cfg.smoothSelection
         editor.smartBackspace = cfg.pairBackspace
         if (editor.showWhitespace != cfg.showWhitespace) editor.showWhitespace = cfg.showWhitespace
         if (editor.bracketMatch != cfg.bracketMatch) editor.bracketMatch = cfg.bracketMatch
@@ -347,6 +363,15 @@ class MainActivity : AppCompatActivity() {
         status.setTextColor((t.barFg and 0x00FFFFFF) or (0xB0 shl 24))
         symbolScroll.setBackgroundColor(t.gutterBg)
         tabRow.setBackgroundColor(t.bar)
+        welcomePanel.setBackgroundColor(t.bg)
+        welcomeTitle.setTextColor(t.fg)
+        welcomeSub.setTextColor((t.fg and 0x00FFFFFF) or 0x99000000.toInt())
+        welcomeRecentHeader.setTextColor((t.fg and 0x00FFFFFF) or 0x88000000.toInt())
+        for ((i, b) in welcomeButtons.withIndex()) styleButton(b, i == 0)
+        styleButton(findViewById(R.id.ex_empty_open), true)
+        findViewById<TextView>(R.id.ex_empty_text).setTextColor(t.barFg)
+        explorer.applyTheme(t)
+        refreshWelcomeRecent()
         btnNew.setColorFilter(t.barFg)
         btnOpen.setColorFilter(t.barFg)
         outputPanel.setBackgroundColor(t.gutterBg)
@@ -432,7 +457,20 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ menu
 
+    private val needsDoc by lazy {
+        setOf(
+            R.id.m_save, R.id.m_save_as, R.id.m_undo, R.id.m_redo, R.id.m_find, R.id.m_goto, R.id.m_selline,
+            R.id.m_dup, R.id.m_del, R.id.m_up, R.id.m_down, R.id.m_comment, R.id.m_indent, R.id.m_unindent,
+            R.id.m_tools, R.id.m_bracket, R.id.m_outline, R.id.m_snippet, R.id.m_lang, R.id.m_enc, R.id.m_eol,
+            R.id.m_share, R.id.m_close, R.id.m_run, R.id.m_runwith
+        )
+    }
+
     private fun onMenu(id: Int): Boolean {
+        if (active == null && id in needsDoc) {
+            toast("Open or create a file first")
+            return true
+        }
         when (id) {
             R.id.m_open -> openLauncher.launch(arrayOf("*/*"))
             R.id.m_save -> saveActive()
@@ -445,6 +483,9 @@ class MainActivity : AppCompatActivity() {
             R.id.m_close -> active?.let { closeDoc(it) }
             R.id.m_close_others -> closeOthers()
             R.id.m_find_all -> globalSearch()
+            R.id.m_more -> showMoreMenu()
+            R.id.m_open_folder -> folderLauncher.launch(null)
+            R.id.m_explorer -> explorer.toggle()
             R.id.m_outline -> showOutline()
             R.id.m_close_all -> closeAll()
             R.id.m_save_all -> saveAll()
@@ -547,6 +588,14 @@ class MainActivity : AppCompatActivity() {
         suppressTab = false
     }
 
+    private fun pill(color: Int): GradientDrawable {
+        val g = GradientDrawable()
+        val r = dp(9).toFloat()
+        g.cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
+        g.setColor(color)
+        return g
+    }
+
     private fun refreshTabs() {
         val cur = pendingDoc ?: active
         for (i in 0 until tabs.tabCount) {
@@ -555,12 +604,20 @@ class MainActivity : AppCompatActivity() {
             val v = tab.customView ?: continue
             val title = v.findViewById<TextView>(R.id.tab_title)
             val close = v.findViewById<TextView>(R.id.tab_close)
+            val dot = v.findViewById<View>(R.id.tab_dot)
             val text = (if (d.isModified) "● " else "") + d.name
             if (title.text.toString() != text) title.text = text
             val sel = d === cur
-            title.setTextColor(edTheme.barFg)
-            title.alpha = if (sel) 1f else 0.6f
-            close.setTextColor(edTheme.barFg)
+            val key = "" + sel + edTheme.bg
+            if (v.tag != key) {
+                v.tag = key
+                v.background = if (sel) pill(edTheme.bg) else null
+            }
+            dot.background?.mutate()?.setTint((edTheme.barFg and 0x00FFFFFF) or 0x66000000)
+            dot.visibility = if (i == tabs.tabCount - 1) View.GONE else View.VISIBLE
+            title.setTextColor(if (sel) edTheme.fg else edTheme.barFg)
+            title.alpha = if (sel) 1f else 0.65f
+            close.setTextColor(if (sel) edTheme.fg else edTheme.barFg)
             close.alpha = if (sel) 0.9f else 0.5f
         }
     }
@@ -592,9 +649,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInEditor(d: Doc) {
+        editor.visibility = View.VISIBLE
+        welcomePanel.visibility = View.GONE
         editor.undoManager = d.undo
         editor.setLanguage(d.lang)
         applyDocIndent(d)
+        applyDocWrap(d)
         host.onLanguage(d.lang.name)
         editor.setContent(d.content)
         val len = editor.buffer.length
@@ -628,13 +688,17 @@ class MainActivity : AppCompatActivity() {
             val r = res
             val e2 = err
             ui.post {
-                if (r != null) {
+                if (r != null && r.kind == FileIO.KIND_TEXT) {
                     d.content = r.text
                     d.crlf = r.crlf
                     d.charset = r.charset
                     d.bom = r.bom
                     d.loaded = true
                     then()
+                } else if (r != null) {
+                    val name = d.name
+                    removeDoc(d)
+                    offerSpecialOpen(uri, name, r)
                 } else {
                     toast("Can't open ${d.name}: ${e2?.message ?: "unknown error"}")
                     removeDoc(d)
@@ -666,7 +730,7 @@ class MainActivity : AppCompatActivity() {
         if (d === active) active = null
         if (d === pendingDoc) pendingDoc = null
         if (docs.isEmpty()) {
-            newDoc()
+            showEmptyState()
             return
         }
         rebuildTabs()
@@ -825,12 +889,15 @@ class MainActivity : AppCompatActivity() {
         val menu = toolbar.menu
         val u = menu.findItem(R.id.m_undo)
         val r = menu.findItem(R.id.m_redo)
-        val um = editor.undoManager
-        u?.isEnabled = um.canUndo()
-        r?.isEnabled = um.canRedo()
-        u?.icon?.alpha = if (um.canUndo()) 255 else 90
-        r?.icon?.alpha = if (um.canRedo()) 255 else 90
+        val um = if (active != null) editor.undoManager else null
+        val canU = um?.canUndo() == true
+        val canR = um?.canRedo() == true
+        u?.isEnabled = canU
+        r?.isEnabled = canR
+        u?.icon?.alpha = if (canU) 255 else 90
+        r?.icon?.alpha = if (canR) 255 else 90
         menu.findItem(R.id.m_save)?.icon?.alpha = if (active?.isModified == true) 255 else 90
+        menu.findItem(R.id.m_run)?.icon?.alpha = if (active != null) 255 else 90
     }
 
     private fun statusLink(sb: SpannableStringBuilder, text: String, action: () -> Unit) {
@@ -849,7 +916,11 @@ class MainActivity : AppCompatActivity() {
 
     /** Status bar: the parts that can be changed (position, indentation, encoding, line ending, language) are tappable. */
     private fun updateStatus() {
-        val d = active ?: return
+        val d = active
+        if (d == null) {
+            status.text = ""
+            return
+        }
         val off = max(0, editor.selectionStart)
         val line = editor.lineOfOffset(off) + 1
         val col = off - editor.lineStart(off) + 1
@@ -968,6 +1039,328 @@ class MainActivity : AppCompatActivity() {
         i.type = "text/plain"
         i.putExtra(Intent.EXTRA_TEXT, t.toString())
         startActivity(Intent.createChooser(i, "Share text"))
+    }
+
+    // ------------------------------------------------------------------ explorer, welcome screen, grouped menu, special files
+
+    private lateinit var explorer: Explorer
+    private lateinit var editorArea: View
+    private lateinit var welcomePanel: View
+    private lateinit var welcomeTitle: TextView
+    private lateinit var welcomeSub: TextView
+    private lateinit var welcomeRecentHeader: TextView
+    private lateinit var welcomeRecent: LinearLayout
+    private var welcomeButtons: List<TextView> = emptyList()
+
+    private val folderLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) onFolderPicked(uri)
+        }
+
+    private fun setupUi2() {
+        editorArea = findViewById(R.id.editor_area)
+        welcomePanel = findViewById(R.id.welcome_panel)
+        welcomeTitle = findViewById(R.id.welcome_title)
+        welcomeSub = findViewById(R.id.welcome_sub)
+        welcomeRecentHeader = findViewById(R.id.w_recent_header)
+        welcomeRecent = findViewById(R.id.w_recent)
+        val wNew = findViewById<TextView>(R.id.w_new)
+        val wOpen = findViewById<TextView>(R.id.w_open)
+        val wFolder = findViewById<TextView>(R.id.w_folder)
+        welcomeButtons = listOf(wNew, wOpen, wFolder)
+        wNew.setOnClickListener { newDoc() }
+        wOpen.setOnClickListener { openLauncher.launch(arrayOf("*/*")) }
+        wFolder.setOnClickListener { folderLauncher.launch(null) }
+
+        val exNewFile = findViewById<TextView>(R.id.ex_new_file)
+        val exNewFolder = findViewById<TextView>(R.id.ex_new_folder)
+        val exRefresh = findViewById<TextView>(R.id.ex_refresh)
+        val exOpen = findViewById<TextView>(R.id.ex_open)
+        explorer = Explorer(
+            this,
+            findViewById(R.id.explorer_panel),
+            findViewById(R.id.explorer_handle),
+            findViewById(R.id.explorer_title),
+            findViewById(R.id.explorer_list),
+            findViewById(R.id.explorer_empty),
+            listOf(exNewFile, exNewFolder, exRefresh, exOpen),
+            cfg.prefs,
+            { uri ->
+                openUri(uri)
+                explorer.hide()
+            },
+            { old, new, name ->
+                val d = docs.firstOrNull { it.uri == old }
+                if (d != null) {
+                    d.uri = new
+                    d.name = name
+                    if (d === active) editor.setLanguage(d.lang)
+                    refreshAll()
+                }
+            },
+            { uri ->
+                val d = docs.firstOrNull { it.uri == uri }
+                if (d != null) removeDoc(d)
+            },
+            { msg -> toast(msg) }
+        )
+        exNewFile.setOnClickListener { explorer.newFile() }
+        exNewFolder.setOnClickListener { explorer.newFolder() }
+        exRefresh.setOnClickListener { explorer.refresh() }
+        exOpen.setOnClickListener { folderLauncher.launch(null) }
+        findViewById<TextView>(R.id.ex_empty_open).setOnClickListener { folderLauncher.launch(null) }
+        editorArea.addOnLayoutChangeListener { _, l, _, r, _, _, _, _, _ -> explorer.layout(r - l) }
+        editorArea.post { explorer.layout(editorArea.width) }
+        explorer.restore()
+    }
+
+    private fun onFolderPicked(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            toast("Access to this folder is only temporary")
+        }
+        explorer.setTree(uri, true)
+        explorer.show()
+    }
+
+    private fun styleButton(tv: TextView, filled: Boolean) {
+        val g = GradientDrawable()
+        g.cornerRadius = dp(10).toFloat()
+        if (filled) {
+            g.setColor(edTheme.accent)
+            tv.setTextColor(edTheme.bg)
+        } else {
+            g.setColor(Color.TRANSPARENT)
+            g.setStroke(dp(1), (edTheme.barFg and 0x00FFFFFF) or 0x55000000)
+            tv.setTextColor(edTheme.fg)
+        }
+        tv.background = g
+    }
+
+    /** No tabs open: show the welcome screen instead of inventing an "Untitled" file. */
+    private fun showEmptyState() {
+        active = null
+        pendingDoc = null
+        untitledCounter = 1
+        rebuildTabs()
+        editor.visibility = View.GONE
+        welcomePanel.visibility = View.VISIBLE
+        findBar.visibility = View.GONE
+        refreshWelcomeRecent()
+        status.text = ""
+        updateUndoRedo()
+    }
+
+    private fun refreshWelcomeRecent() {
+        if (!::welcomeRecent.isInitialized) return
+        welcomeRecent.removeAllViews()
+        val names = ArrayList<String>()
+        val uris = ArrayList<String>()
+        try {
+            val arr = JSONArray(prefs.getString("recent", "[]") ?: "[]")
+            for (k in 0 until min(arr.length(), 6)) {
+                val o = arr.getJSONObject(k)
+                uris.add(o.optString("u"))
+                names.add(o.optString("n"))
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+        welcomeRecentHeader.visibility = if (names.isEmpty()) View.GONE else View.VISIBLE
+        for (i in names.indices) {
+            val tv = TextView(this)
+            tv.text = names[i]
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            tv.setTextColor(edTheme.accent)
+            tv.maxLines = 1
+            tv.ellipsize = android.text.TextUtils.TruncateAt.END
+            tv.setPadding(0, dp(7), 0, dp(7))
+            tv.setOnClickListener { openUri(Uri.parse(uris[i])) }
+            welcomeRecent.addView(tv)
+        }
+    }
+
+    private class MenuRow(val id: Int, val title: String, val header: Boolean, val checked: Boolean)
+
+    /** The "more" menu: grouped, with section headers and dividers. */
+    private fun showMoreMenu() {
+        val sections = listOf(
+            "File" to listOf(R.id.m_new, R.id.m_open, R.id.m_open_folder, R.id.m_save_as, R.id.m_save_all, R.id.m_recent, R.id.m_close, R.id.m_close_others, R.id.m_close_all),
+            "Edit" to listOf(R.id.m_dup, R.id.m_del, R.id.m_up, R.id.m_down, R.id.m_selline, R.id.m_comment, R.id.m_indent, R.id.m_unindent, R.id.m_tools),
+            "Go to" to listOf(R.id.m_goto, R.id.m_outline, R.id.m_bracket, R.id.m_find_all, R.id.m_palette),
+            "Run and extend" to listOf(R.id.m_runwith, R.id.m_output, R.id.m_snippet, R.id.m_plugins),
+            "View" to listOf(R.id.m_explorer, R.id.m_wrap, R.id.m_lines, R.id.m_theme, R.id.m_fontup, R.id.m_fontdown),
+            "This file" to listOf(R.id.m_lang, R.id.m_indentation, R.id.m_enc, R.id.m_eol),
+            "Options" to listOf(R.id.m_autoindent, R.id.m_autosave, R.id.m_share)
+        )
+        val menu = toolbar.menu
+        val rows = ArrayList<MenuRow>()
+        for ((name, ids) in sections) {
+            rows.add(MenuRow(0, name, true, false))
+            for (id in ids) {
+                val mi = menu.findItem(id) ?: continue
+                rows.add(MenuRow(id, mi.title?.toString() ?: "", false, mi.isCheckable && mi.isChecked))
+            }
+        }
+        val t = edTheme
+        val adapter = object : BaseAdapter() {
+            override fun getCount(): Int = rows.size
+            override fun getItem(position: Int): Any = rows[position]
+            override fun getItemId(position: Int): Long = position.toLong()
+            override fun isEnabled(position: Int): Boolean = !rows[position].header
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val r = rows[position]
+                if (r.header) {
+                    val box = LinearLayout(this@MainActivity)
+                    box.orientation = LinearLayout.VERTICAL
+                    if (position > 0) {
+                        val line = View(this@MainActivity)
+                        line.setBackgroundColor((t.barFg and 0x00FFFFFF) or 0x30000000)
+                        box.addView(line, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)))
+                    }
+                    val tv = TextView(this@MainActivity)
+                    tv.text = r.title.uppercase()
+                    tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    tv.typeface = Typeface.DEFAULT_BOLD
+                    tv.setTextColor(t.accent)
+                    tv.setPadding(dp(16), dp(12), dp(16), dp(4))
+                    box.addView(tv)
+                    return box
+                }
+                val tv = TextView(this@MainActivity)
+                tv.text = (if (r.checked) "✓   " else "      ") + r.title
+                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                tv.setTextColor(t.barFg)
+                tv.setPadding(dp(16), dp(11), dp(16), dp(11))
+                return tv
+            }
+        }
+        val pw = ListPopupWindow(this)
+        pw.anchorView = toolbar
+        pw.setAdapter(adapter)
+        pw.width = dp(280)
+        pw.height = min(dp(600), (resources.displayMetrics.heightPixels * 0.78f).toInt())
+        pw.isModal = true
+        pw.setDropDownGravity(Gravity.END)
+        val bg = GradientDrawable()
+        bg.setColor(t.bar)
+        bg.cornerRadius = dp(12).toFloat()
+        bg.setStroke(dp(1), (t.barFg and 0x00FFFFFF) or 0x33000000)
+        pw.setBackgroundDrawable(bg)
+        pw.setOnItemClickListener { _, _, pos, _ ->
+            val r = rows[pos]
+            if (!r.header) {
+                pw.dismiss()
+                onMenu(r.id)
+            }
+        }
+        pw.show()
+    }
+
+    // ---- binary and very large files
+
+    private fun humanSize(b: Long): String = when {
+        b < 0 -> "unknown size"
+        b < 1024 -> "$b B"
+        b < 1024 * 1024 -> String.format("%.1f KB", b / 1024.0)
+        else -> String.format("%.1f MB", b / 1048576.0)
+    }
+
+    private fun offerSpecialOpen(uri: Uri, name: String, r: FileIO.Loaded) {
+        val sizeText = humanSize(r.size)
+        if (r.kind == FileIO.KIND_BINARY) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Binary file")
+                .setMessage("\"" + name + "\" (" + sizeText + ") looks like a binary file such as a zip, image or compiled XML. Opening it as text can freeze the editor.")
+                .setPositiveButton("View hex") { _, _ -> openHexView(name, r) }
+                .setNeutralButton("Open as text") { _, _ -> openSpecial(uri, name, FileIO.MODE_FORCE) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            val canFull = r.size in 0L..FileIO.MAX_BYTES.toLong()
+            val b = MaterialAlertDialogBuilder(this)
+                .setTitle("Large file")
+                .setMessage("\"" + name + "\" is " + sizeText + ". Large files make the editor slow." + (if (canFull) "" else " It is too large to open completely."))
+                .setPositiveButton("Open first 1 MB") { _, _ -> openSpecial(uri, name, FileIO.MODE_HEAD) }
+                .setNegativeButton("Cancel", null)
+            if (canFull) b.setNeutralButton("Open anyway") { _, _ -> openSpecial(uri, name, FileIO.MODE_FORCE) }
+            b.show()
+        }
+    }
+
+    private fun openHexView(name: String, r: FileIO.Loaded) {
+        val d = Doc(null, "$name (hex)")
+        d.content = FileIO.hexDump(name, r.preview, r.size)
+        d.loaded = true
+        docs.add(d)
+        rebuildTabs()
+        activate(d)
+    }
+
+    private fun openSpecial(uri: Uri, name: String, mode: Int) {
+        status.text = "Loading…"
+        io.execute {
+            var res: FileIO.Loaded? = null
+            var err: Exception? = null
+            try {
+                res = FileIO.read(contentResolver, uri, mode)
+            } catch (e: Exception) {
+                err = e
+            }
+            val lm = FileIO.lastModified(contentResolver, uri)
+            val r = res
+            val e2 = err
+            ui.post {
+                if (r == null || r.kind != FileIO.KIND_TEXT) {
+                    toast("Can't open $name: " + (e2?.message ?: "unknown error"))
+                } else {
+                    val label = if (mode == FileIO.MODE_HEAD) " (first 1 MB)" else " (text view)"
+                    val d = if (r.partial) Doc(null, name + label) else Doc(uri, name)
+                    d.content = r.text
+                    d.crlf = r.crlf
+                    d.charset = r.charset
+                    d.bom = r.bom
+                    d.loaded = true
+                    if (!r.partial) d.diskTime = lm
+                    docs.add(d)
+                    rebuildTabs()
+                    activate(d)
+                    if (r.partial) toast("This is a partial copy. Saving asks for a new file name.")
+                }
+            }
+        }
+    }
+
+    /** Very long single lines break text rendering when wrapping is off, so force wrapping for such files. */
+    private fun applyDocWrap(d: Doc) {
+        if (!d.hugeChecked && d.loaded) {
+            d.hugeChecked = true
+            d.forceWrap = hasHugeLine(d.content)
+            if (d.forceWrap) toast("Very long lines: word wrap is kept on for this file")
+        }
+        if (d.forceWrap) {
+            if (!editor.wordWrap) editor.wordWrap = true
+        } else if (editor.wordWrap != cfg.wrap) {
+            editor.wordWrap = cfg.wrap
+        }
+    }
+
+    private fun hasHugeLine(t: String): Boolean {
+        if (t.length < 50_000) return false
+        var run = 0
+        for (ch in t) {
+            if (ch == '\n') {
+                run = 0
+            } else {
+                run++
+                if (run > 20_000) return true
+            }
+        }
+        return false
     }
 
     // ------------------------------------------------------------------ indentation, search, outline
@@ -1118,9 +1511,7 @@ class MainActivity : AppCompatActivity() {
         syncActive()
         confirmDiscard(docs.size, "all") {
             docs.clear()
-            active = null
-            pendingDoc = null
-            newDoc()
+            showEmptyState()
         }
     }
 
@@ -1488,7 +1879,7 @@ class MainActivity : AppCompatActivity() {
         val menu = toolbar.menu
         for (i in 0 until menu.size()) {
             val mi = menu.getItem(i)
-            if (mi.itemId == R.id.m_palette) continue
+            if (mi.itemId == R.id.m_palette || mi.itemId == R.id.m_more) continue
             val t = mi.title?.toString() ?: continue
             items.add(PaletteItem(t) { onMenu(mi.itemId) })
         }

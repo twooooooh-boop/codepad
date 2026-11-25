@@ -89,6 +89,8 @@ class SettingsActivity : AppCompatActivity() {
         switchRow("Bracket matching", "Highlight the partner of the bracket at the cursor", cfg.bracketMatch) { cfg.bracketMatch = it }
         switchRow("Indent guides", "Vertical lines at each indentation level", cfg.guides) { cfg.guides = it }
         switchRow("Show whitespace", "Dots for spaces, arrows for tabs", cfg.showWhitespace) { cfg.showWhitespace = it }
+        switchRow("Smooth caret", "The caret glides between positions (Android 10+)", cfg.smoothCaret) { cfg.smoothCaret = it }
+        switchRow("Smooth selection", "Selections grow and shrink with an animation", cfg.smoothSelection) { cfg.smoothSelection = it }
 
         header("Saving")
         switchRow("Auto-save on exit", "Write modified files when you leave the app", cfg.autosave) { cfg.autosave = it }

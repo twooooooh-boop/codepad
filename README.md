@@ -11,3 +11,7 @@ Build: push to GitHub -> Actions -> "Build APK" -> Run workflow -> download app-
 
 Run files: the toolbar Run button (or F5) runs the open file through a plugin runner. Runners, snippets,
 commands and scripts all come from plugins - see docs/PLUGINS.md.
+
+Explorer: tap the ‹ handle on the right edge (or Ctrl+B) to open a folder, create / rename / delete files and folders.
+Closing the last tab shows the welcome screen instead of creating an Untitled file.
+Binary and very large files are detected before opening (hex view / partial copy instead of freezing the editor).
