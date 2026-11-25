@@ -12,7 +12,13 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.graphics.Color
 import android.text.Editable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
 import android.text.TextWatcher
 import android.view.WindowManager
 import android.widget.ArrayAdapter
@@ -58,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var store: SessionStore
     private lateinit var cfg: AppSettings
     private var checkingExternal = false
+    private var writesInFlight = 0
 
     private val docs = ArrayList<Doc>()
     private var active: Doc? = null
@@ -152,6 +159,8 @@ class MainActivity : AppCompatActivity() {
             override fun onTabReselected(tab: TabLayout.Tab) {}
         })
 
+        status.movementMethod = LinkMovementMethod.getInstance()
+        status.highlightColor = Color.TRANSPARENT
         setupSymbols()
         setupPlugins()
         applySettings()
@@ -220,7 +229,7 @@ class MainActivity : AppCompatActivity() {
     private fun checkExternalChange() {
         val d = active ?: return
         val uri = d.uri ?: return
-        if (!d.loaded || d.diskTime == 0L || checkingExternal) return
+        if (!d.loaded || d.diskTime == 0L || checkingExternal || writesInFlight > 0) return
         checkingExternal = true
         io.execute {
             val t = FileIO.lastModified(contentResolver, uri)
@@ -314,6 +323,8 @@ class MainActivity : AppCompatActivity() {
         editor.useSpaces = cfg.spaces
         editor.autoClose = cfg.autoClose
         editor.pairs = cfg.pairs
+        editor.smartBackspace = cfg.pairBackspace
+        if (editor.showWhitespace != cfg.showWhitespace) editor.showWhitespace = cfg.showWhitespace
         if (editor.bracketMatch != cfg.bracketMatch) editor.bracketMatch = cfg.bracketMatch
         if (editor.showGuides != cfg.guides) editor.showGuides = cfg.guides
         if (editor.fontSp != cfg.font) editor.applyFontSize(cfg.font)
@@ -322,6 +333,7 @@ class MainActivity : AppCompatActivity() {
         m.findItem(R.id.m_lines)?.isChecked = editor.showLineNumbers
         m.findItem(R.id.m_autoindent)?.isChecked = editor.autoIndent
         m.findItem(R.id.m_autosave)?.isChecked = cfg.autosave
+        active?.let { applyDocIndent(it) }
         applyTheme()
     }
 
@@ -432,6 +444,8 @@ class MainActivity : AppCompatActivity() {
             R.id.m_recent -> showRecent()
             R.id.m_close -> active?.let { closeDoc(it) }
             R.id.m_close_others -> closeOthers()
+            R.id.m_find_all -> globalSearch()
+            R.id.m_outline -> showOutline()
             R.id.m_close_all -> closeAll()
             R.id.m_save_all -> saveAll()
             R.id.m_goto -> gotoLine()
@@ -580,6 +594,7 @@ class MainActivity : AppCompatActivity() {
     private fun showInEditor(d: Doc) {
         editor.undoManager = d.undo
         editor.setLanguage(d.lang)
+        applyDocIndent(d)
         host.onLanguage(d.lang.name)
         editor.setContent(d.content)
         val len = editor.buffer.length
@@ -754,6 +769,7 @@ class MainActivity : AppCompatActivity() {
         val cs = d.charset
         val bom = d.bom
         val ver = d.undo.version
+        writesInFlight++
         io.execute {
             var err: Exception? = null
             try {
@@ -764,6 +780,7 @@ class MainActivity : AppCompatActivity() {
             }
             val e2 = err
             ui.post {
+                writesInFlight--
                 if (e2 == null) {
                     if (d.undo.version == ver) d.undo.markSaved()
                     if (!silent) toast("Saved ${d.name}")
@@ -816,21 +833,39 @@ class MainActivity : AppCompatActivity() {
         menu.findItem(R.id.m_save)?.icon?.alpha = if (active?.isModified == true) 255 else 90
     }
 
+    private fun statusLink(sb: SpannableStringBuilder, text: String, action: () -> Unit) {
+        val st = sb.length
+        sb.append(text)
+        sb.setSpan(object : ClickableSpan() {
+            override fun onClick(widget: View) {
+                action()
+            }
+
+            override fun updateDrawState(ds: TextPaint) {
+                ds.isUnderlineText = false
+            }
+        }, st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    /** Status bar: the parts that can be changed (position, indentation, encoding, line ending, language) are tappable. */
     private fun updateStatus() {
         val d = active ?: return
         val off = max(0, editor.selectionStart)
         val line = editor.lineOfOffset(off) + 1
         val col = off - editor.lineStart(off) + 1
         val sel = abs(editor.selectionEnd - editor.selectionStart)
-        val sb = StringBuilder()
-        sb.append("Ln ").append(line).append(", Col ").append(col)
-        if (sel > 0) sb.append(" (").append(sel).append(" sel)")
-        sb.append("   ").append(editor.buffer.length).append(" chars")
-        sb.append("   ").append(d.charset)
-        if (d.bom) sb.append("+BOM")
-        sb.append("   ").append(if (d.crlf) "CRLF" else "LF")
-        sb.append("   ").append(d.lang.name)
-        status.text = sb.toString()
+        val sb = SpannableStringBuilder()
+        statusLink(sb, "Ln " + line + ", Col " + col) { gotoLine() }
+        if (sel > 0) sb.append(" (").append(sel.toString()).append(" sel)")
+        sb.append("   ").append(editor.buffer.length.toString()).append(" chars   ")
+        statusLink(sb, if (editor.useSpaces) "Spaces: " + editor.tabSize else "Tabs") { pickIndentation() }
+        sb.append("   ")
+        statusLink(sb, d.charset + (if (d.bom) "+BOM" else "")) { pickEncoding() }
+        sb.append("   ")
+        statusLink(sb, if (d.crlf) "CRLF" else "LF") { pickLineEnding() }
+        sb.append("   ")
+        statusLink(sb, d.lang.name) { pickLanguage() }
+        status.text = sb
     }
 
     // ------------------------------------------------------------------ dialogs
@@ -933,6 +968,109 @@ class MainActivity : AppCompatActivity() {
         i.type = "text/plain"
         i.putExtra(Intent.EXTRA_TEXT, t.toString())
         startActivity(Intent.createChooser(i, "Share text"))
+    }
+
+    // ------------------------------------------------------------------ indentation, search, outline
+
+    /** Uses the file's own indentation style (spaces/tabs and width) while it is open. */
+    private fun applyDocIndent(d: Doc) {
+        if (!d.indentChecked && d.loaded) {
+            d.indentChecked = true
+            val det = IndentDetect.detect(d.content)
+            if (det != null) {
+                d.indentSpaces = det.first
+                d.indentSize = det.second
+            }
+        }
+        val sp = d.indentSpaces
+        if (sp != null) {
+            editor.useSpaces = sp
+            editor.tabSize = d.indentSize
+        }
+    }
+
+    private fun jumpTo(d: Doc, line: Int, col: Int, len: Int) {
+        activate(d)
+        if (active === d) {
+            val n = editor.buffer.length
+            val off = min(editor.offsetOfLine(line + 1) + col, n)
+            editor.requestFocus()
+            editor.setSelection(off, min(off + len, n))
+            editor.revealOffset(off)
+        }
+    }
+
+    private fun globalSearch() {
+        syncActive()
+        val et = EditText(this)
+        et.hint = "Search in all open tabs"
+        et.setSingleLine()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Search in open tabs")
+            .setView(boxed(et))
+            .setPositiveButton("Search") { _, _ -> runGlobalSearch(et.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private class Hit(val doc: Doc, val line: Int, val col: Int, val text: String)
+
+    private fun runGlobalSearch(q: String) {
+        if (q.isEmpty()) return
+        val hits = ArrayList<Hit>()
+        var skipped = 0
+        for (d in docs) {
+            if (!d.loaded) {
+                skipped++
+                continue
+            }
+            val lines = d.content.split("\n")
+            for ((li, ln) in lines.withIndex()) {
+                var from = 0
+                while (hits.size < 300) {
+                    val at = ln.indexOf(q, from, ignoreCase = true)
+                    if (at < 0) break
+                    hits.add(Hit(d, li, at, ln.trim().take(90)))
+                    from = at + max(1, q.length)
+                }
+                if (hits.size >= 300) break
+            }
+            if (hits.size >= 300) break
+        }
+        if (hits.isEmpty()) {
+            toast("No matches" + (if (skipped > 0) " ($skipped tab(s) not opened yet)" else ""))
+            return
+        }
+        val names = hits.map { it.doc.name + ":" + (it.line + 1) + "   " + it.text }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(hits.size.toString() + " match(es)")
+            .setItems(names) { _, which ->
+                val h = hits[which]
+                jumpTo(h.doc, h.line, h.col, q.length)
+            }
+            .show()
+    }
+
+    private fun showOutline() {
+        val d = active ?: return
+        syncActive()
+        val items = Outline.find(d.lang.name, d.content)
+        if (items.isEmpty()) {
+            toast(if (Outline.supports(d.lang.name)) "No symbols found" else "No outline for " + d.lang.name)
+            return
+        }
+        val names = items.map { it.label + "   - " + (it.line + 1) }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Go to symbol")
+            .setItems(names) { _, which -> jumpTo(d, items[which].line, 0, 0) }
+            .show()
+    }
+
+    override fun onDestroy() {
+        ui.removeCallbacks(draftRunnable)
+        if (::host.isInitialized) host.stop()
+        SandboxRunner.cancel()
+        super.onDestroy()
     }
 
     // ------------------------------------------------------------------ tabs: bulk actions, crash report
@@ -1124,7 +1262,7 @@ class MainActivity : AppCompatActivity() {
         plugins.reload()
         host = PluginHost(this, plugins, hostApi)
         pluginSig = plugins.signature()
-        host.start()
+        host.restart()
         editor.tabHook = { expandSnippetAtCaret() }
     }
 
@@ -1134,7 +1272,7 @@ class MainActivity : AppCompatActivity() {
         val sig = plugins.signature()
         if (sig != pluginSig) {
             pluginSig = sig
-            host.start()
+            host.restart()
         }
     }
 

@@ -88,6 +88,7 @@ class SettingsActivity : AppCompatActivity() {
         switchRow("Auto-indent", "Keep indentation on Enter, expand {|} blocks", cfg.autoIndent) { cfg.autoIndent = it }
         switchRow("Bracket matching", "Highlight the partner of the bracket at the cursor", cfg.bracketMatch) { cfg.bracketMatch = it }
         switchRow("Indent guides", "Vertical lines at each indentation level", cfg.guides) { cfg.guides = it }
+        switchRow("Show whitespace", "Dots for spaces, arrows for tabs", cfg.showWhitespace) { cfg.showWhitespace = it }
 
         header("Saving")
         switchRow("Auto-save on exit", "Write modified files when you leave the app", cfg.autosave) { cfg.autosave = it }
@@ -98,6 +99,7 @@ class SettingsActivity : AppCompatActivity() {
         switchRow("Auto-close pairs", "Typing a trigger inserts its completion. Selected text gets wrapped.", cfg.autoClose) {
             cfg.autoClose = it
         }
+        switchRow("Smart backspace", "Backspace between a pair deletes both characters", cfg.pairBackspace) { cfg.pairBackspace = it }
         val list = cfg.pairs
         if (list.isEmpty()) {
             note("No pairs. Tap \"Add pair\" to create one.")

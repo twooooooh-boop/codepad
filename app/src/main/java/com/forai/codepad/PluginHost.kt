@@ -44,8 +44,18 @@ class PluginHost(
     private val queue = ArrayList<String>()
     private val activated = HashSet<String>()
 
+    private fun needsStartup(): Boolean = mgr.enabledPlugins().any { p ->
+        p.script.isNotEmpty() && (p.activation.contains("onStartup") || p.activation.any { it.startsWith("onLanguage:") })
+    }
+
+    /** Stops the host and starts it again only if some enabled plugin wants to load at startup. */
+    fun restart() {
+        stop()
+        if (needsStartup()) start()
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
-    fun start() {
+    private fun start() {
         stop()
         val w = WebView(ctx)
         w.settings.javaScriptEnabled = true
@@ -93,11 +103,15 @@ class PluginHost(
     }
 
     fun onLanguage(language: String) {
+        if (web == null) {
+            if (needsStartup()) start() else return
+        }
         for (p in mgr.enabledPlugins()) if (p.activation.contains("onLanguage:$language")) activate(p)
     }
 
     fun runCommand(pluginId: String, commandId: String) {
         val p = mgr.byId(pluginId) ?: return
+        if (web == null) start()
         activate(p)
         js("__cpRunCommand(" + JSONObject.quote(pluginId) + "," + JSONObject.quote(commandId) + ");")
     }

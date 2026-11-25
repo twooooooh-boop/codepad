@@ -81,6 +81,13 @@ class EditorView @JvmOverloads constructor(
     var tabSize: Int = 4
     var useSpaces: Boolean = true
     var autoClose: Boolean = true
+    var smartBackspace: Boolean = true
+
+    var showWhitespace: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
 
     var bracketMatch: Boolean = true
         set(value) {
@@ -140,6 +147,7 @@ class EditorView @JvmOverloads constructor(
     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bubbleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val wsPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     private var pairsSorted: List<PairDef> = emptyList()
     private var openChars = "([{"
@@ -254,7 +262,7 @@ class EditorView @JvmOverloads constructor(
             val c = source[start]
             if (c == '\n') {
                 handleEnter(dest, dstart, dend)
-            } else if (autoClose && pairsSorted.isNotEmpty()) {
+            } else if (autoClose) {
                 handlePair(c, dest, dstart, dend)
             } else {
                 null
@@ -336,6 +344,15 @@ class EditorView @JvmOverloads constructor(
         val next: Char? = if (dend < dest.length) dest[dend] else null
         val prev: Char? = if (dstart > 0) dest[dstart - 1] else null
 
+        // HTML / XML: typing > after an opening tag inserts the closing tag
+        if (c == '>' && !hasSel && (lang.name == "HTML" || lang.name == "XML")) {
+            val tag = tagBefore(dest, dstart)
+            if (tag != null) {
+                postCaret(dstart + 1)
+                return ">" + "</" + tag + ">"
+            }
+        }
+
         // typing a closing character that is already there: just step over it
         if (!hasSel && next == c && isCloseChar(c)) {
             postCaret(dstart + 1, 0)
@@ -368,9 +385,30 @@ class EditorView @JvmOverloads constructor(
         return null
     }
 
+    private val voidTags = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr")
+
+    /** Name of the tag being opened right before [pos] (e.g. div for `<div class="a"`), or null. */
+    private fun tagBefore(dest: CharSequence, pos: Int): String? {
+        var i = pos - 1
+        val lim = max(0, pos - 400)
+        while (i >= lim && dest[i] != '<' && dest[i] != '>') i--
+        if (i < lim || dest[i] != '<') return null
+        var j = i + 1
+        val sb = StringBuilder()
+        while (j < pos && (dest[j].isLetterOrDigit() || dest[j] == '-' || dest[j] == ':' || dest[j] == '_' || dest[j] == '.')) {
+            sb.append(dest[j])
+            j++
+        }
+        if (sb.isEmpty() || !sb[0].isLetter()) return null
+        if (pos > 0 && dest[pos - 1] == '/') return null
+        val name = sb.toString()
+        if (lang.name == "HTML" && voidTags.contains(name.lowercase())) return null
+        return name
+    }
+
     /** Backspace between an auto-inserted pair removes both halves. */
     private fun pairBackspace(): Boolean {
-        if (!autoClose || programmatic) return false
+        if (!autoClose || !smartBackspace || programmatic) return false
         val a = selectionStart
         if (a < 0 || a != selectionEnd) return false
         val t = buffer
@@ -394,6 +432,11 @@ class EditorView @JvmOverloads constructor(
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
                 if (beforeLength == 1 && afterLength == 0 && pairBackspace()) return true
                 return super.deleteSurroundingText(beforeLength, afterLength)
+            }
+
+            override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+                if (beforeLength == 1 && afterLength == 0 && pairBackspace()) return true
+                return super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
             }
 
             override fun sendKeyEvent(event: KeyEvent): Boolean {
@@ -432,6 +475,7 @@ class EditorView @JvmOverloads constructor(
         bracketPaint.color = (t.accent and 0x00FFFFFF) or 0x66000000
         bracketBadPaint.color = 0x66FF5555
         bubbleTextPaint.color = t.bg
+        wsPaint.color = (t.gutterFg and 0x00FFFFFF) or 0x90000000.toInt()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val d = GradientDrawable()
@@ -656,6 +700,7 @@ class EditorView @JvmOverloads constructor(
                 canvas.drawRect(sx, top + l.getLineTop(line), sx + width, top + l.getLineBottom(line), linePaint)
             }
             if (showGuides) drawGuides(canvas, l)
+            if (showWhitespace) drawWhitespace(canvas, l)
             if (bmA >= 0) {
                 drawRange(canvas, l, bmA, bmA + 1, if (bmB >= 0) bracketPaint else bracketBadPaint)
                 if (bmB >= 0) drawRange(canvas, l, bmB, bmB + 1, bracketPaint)
@@ -836,7 +881,7 @@ class EditorView @JvmOverloads constructor(
         val a = selectionStart
         val b = selectionEnd
         val block = t.subSequence(r[0], r[1]).toString()
-        t.replace(r[1], r[1], "\n" + block)
+        replaceRange(r[1], r[1], "\n" + block)
         val d = block.length + 1
         setSelection(min(a + d, t.length), min(b + d, t.length))
     }
@@ -847,7 +892,7 @@ class EditorView @JvmOverloads constructor(
         var s = r[0]
         var e = r[1]
         if (e < t.length) e++ else if (s > 0) s--
-        t.replace(s, e, "")
+        replaceRange(s, e, "")
         setSelection(min(s, t.length))
     }
 
@@ -863,7 +908,7 @@ class EditorView @JvmOverloads constructor(
             val ps = lineStart(s - 1)
             val prev = t.subSequence(ps, s - 1).toString()
             val block = t.subSequence(s, e).toString()
-            t.replace(ps, e, block + "\n" + prev)
+            replaceRange(ps, e, block + "\n" + prev)
             val d = prev.length + 1
             setSelection((selA - d).coerceIn(0, t.length), (selB - d).coerceIn(0, t.length))
         } else {
@@ -871,7 +916,7 @@ class EditorView @JvmOverloads constructor(
             val ne = lineEnd(e + 1)
             val next = t.subSequence(e + 1, ne).toString()
             val block = t.subSequence(s, e).toString()
-            t.replace(s, ne, next + "\n" + block)
+            replaceRange(s, ne, next + "\n" + block)
             val d = next.length + 1
             setSelection((selA + d).coerceIn(0, t.length), (selB + d).coerceIn(0, t.length))
         }
@@ -898,7 +943,7 @@ class EditorView @JvmOverloads constructor(
                 out.append(ln, 0, indent).append(prefix).append(' ').append(ln, indent, ln.length)
             }
         }
-        t.replace(r[0], r[1], out.toString())
+        replaceRange(r[0], r[1], out.toString())
         setSelection(r[0], min(r[0] + out.length, t.length))
     }
 
@@ -922,7 +967,7 @@ class EditorView @JvmOverloads constructor(
                 out.append(ln, n, ln.length)
             }
         }
-        t.replace(r[0], r[1], out.toString())
+        replaceRange(r[0], r[1], out.toString())
         setSelection(r[0], min(r[0] + out.length, t.length))
     }
 
@@ -1087,6 +1132,39 @@ class EditorView @JvmOverloads constructor(
         }
     }
 
+    // ---- whitespace markers ----
+    private fun drawWhitespace(canvas: Canvas, l: Layout) {
+        val t = buffer
+        val top = extendedPaddingTop
+        val first = l.getLineForVertical(max(0, scrollY - top))
+        val last = l.getLineForVertical(max(0, scrollY + height - top))
+        val left = compoundPaddingLeft.toFloat()
+        val spaceW = paint.measureText(" ")
+        val r = max(1f, dp(1.1f))
+        wsPaint.strokeWidth = max(1f, dp(1f))
+        for (row in first..last) {
+            val rs = l.getLineStart(row)
+            val re = min(min(l.getLineEnd(row), t.length), rs + 800)
+            val midY = (top + l.getLineBaseline(row)).toFloat() - textSize * 0.3f
+            var i = rs
+            while (i < re) {
+                val ch = t[i]
+                if (ch == ' ') {
+                    canvas.drawCircle(left + l.getPrimaryHorizontal(i) + spaceW / 2f, midY, r, wsPaint)
+                } else if (ch == '\t') {
+                    val x1 = left + l.getPrimaryHorizontal(i)
+                    val x2 = if (i + 1 <= t.length) left + l.getPrimaryHorizontal(i + 1) else x1 + spaceW * tabSize
+                    if (x2 > x1 + 4f) {
+                        canvas.drawLine(x1 + 2f, midY, x2 - 2f, midY, wsPaint)
+                        canvas.drawLine(x2 - 2f - r * 3f, midY - r * 2f, x2 - 2f, midY, wsPaint)
+                        canvas.drawLine(x2 - 2f - r * 3f, midY + r * 2f, x2 - 2f, midY, wsPaint)
+                    }
+                }
+                i++
+            }
+        }
+    }
+
     // ---- fast scroller ----
     /** [top, height] of the scroll thumb in view coordinates, or null when nothing can scroll. */
     private fun thumbMetrics(): FloatArray? {
@@ -1135,6 +1213,7 @@ class EditorView @JvmOverloads constructor(
     private fun handleThumbTouch(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (!draggingThumb && SystemClock.uptimeMillis() >= thumbUntil) return false
                 val m = thumbMetrics() ?: return false
                 if (e.x >= width - dp(30f) && e.y >= m[0] - dp(14f) && e.y <= m[0] + m[1] + dp(14f)) {
                     draggingThumb = true

@@ -23,6 +23,8 @@
     <item android:id="@+id/m_close_all" android:title="Close all tabs" app:showAsAction="never" />
     <item android:id="@+id/m_save_all" android:title="Save all" app:showAsAction="never" />
     <item android:id="@+id/m_goto" android:title="Go to line…" app:showAsAction="never" />
+    <item android:id="@+id/m_outline" android:title="Go to symbol…" app:showAsAction="never" />
+    <item android:id="@+id/m_find_all" android:title="Search in open tabs…" app:showAsAction="never" />
     <item android:id="@+id/m_bracket" android:title="Jump to matching bracket" app:showAsAction="never" />
     <item android:id="@+id/m_selline" android:title="Select line" app:showAsAction="never" />
     <item android:id="@+id/m_dup" android:title="Duplicate line" app:showAsAction="never" />

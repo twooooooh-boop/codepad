@@ -109,3 +109,53 @@ object Tools {
             "\t".repeat(k / tabSize) + " ".repeat(k % tabSize) + line.substring(k)
         }
 }
+
+/** Guesses whether a file is indented with tabs or spaces, and how wide one level is. */
+object IndentDetect {
+    /** Returns (useSpaces, width) or null when the file gives no clear signal. */
+    fun detect(text: String): Pair<Boolean, Int>? {
+        var tabLines = 0
+        var spaceLines = 0
+        val deltas = IntArray(9)
+        var prev = 0
+        var pos = 0
+        var seen = 0
+        val n = text.length
+        while (pos < n && seen < 3000) {
+            var e = text.indexOf('\n', pos)
+            if (e < 0) e = n
+            var i = pos
+            var sp = 0
+            while (i < e && text[i] == ' ') {
+                sp++
+                i++
+            }
+            val blank = i >= e || text[i] == '\r'
+            if (!blank) {
+                seen++
+                if (text[i] == '\t') {
+                    tabLines++
+                } else {
+                    if (sp > 0) spaceLines++
+                    val d = if (sp > prev) sp - prev else prev - sp
+                    if (d in 1..8) deltas[d]++
+                    prev = sp
+                }
+            }
+            pos = e + 1
+        }
+        if (tabLines >= 3 && tabLines >= spaceLines * 2) return Pair(false, 4)
+        if (spaceLines >= 3 && spaceLines >= tabLines * 2) {
+            var best = 4
+            var bestScore = -1
+            for (k in intArrayOf(4, 2, 8, 3)) {
+                if (deltas[k] > bestScore) {
+                    bestScore = deltas[k]
+                    best = k
+                }
+            }
+            return Pair(true, best)
+        }
+        return null
+    }
+}

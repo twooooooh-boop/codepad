@@ -23,7 +23,7 @@ class AppSettings(ctx: Context) {
 
         private val KEYS = listOf(
             "theme", "font", "wrap", "lines", "indent", "tabsize", "spaces", "autosave",
-            "autoclose", "bracket", "guides", "trim", "finalnl", "pairs"
+            "autoclose", "bracket", "guides", "trim", "finalnl", "pairs", "ws", "pairbs"
         )
     }
 
@@ -72,6 +72,14 @@ class AppSettings(ctx: Context) {
     var guides: Boolean
         get() = prefs.getBoolean("guides", true)
         set(v) = prefs.edit().putBoolean("guides", v).apply()
+
+    var showWhitespace: Boolean
+        get() = prefs.getBoolean("ws", false)
+        set(v) = prefs.edit().putBoolean("ws", v).apply()
+
+    var pairBackspace: Boolean
+        get() = prefs.getBoolean("pairbs", true)
+        set(v) = prefs.edit().putBoolean("pairbs", v).apply()
 
     var trimOnSave: Boolean
         get() = prefs.getBoolean("trim", false)
@@ -130,6 +138,8 @@ class AppSettings(ctx: Context) {
         o.put("autoClose", autoClose)
         o.put("bracketMatching", bracketMatch)
         o.put("indentGuides", guides)
+        o.put("showWhitespace", showWhitespace)
+        o.put("smartBackspace", pairBackspace)
         o.put("trimTrailingOnSave", trimOnSave)
         o.put("finalNewlineOnSave", finalNewline)
         o.put("autoClosePairs", pairsToJson(pairs))
@@ -151,6 +161,8 @@ class AppSettings(ctx: Context) {
         if (o.has("autoClose")) { autoClose = o.getBoolean("autoClose"); n++ }
         if (o.has("bracketMatching")) { bracketMatch = o.getBoolean("bracketMatching"); n++ }
         if (o.has("indentGuides")) { guides = o.getBoolean("indentGuides"); n++ }
+        if (o.has("showWhitespace")) { showWhitespace = o.getBoolean("showWhitespace"); n++ }
+        if (o.has("smartBackspace")) { pairBackspace = o.getBoolean("smartBackspace"); n++ }
         if (o.has("trimTrailingOnSave")) { trimOnSave = o.getBoolean("trimTrailingOnSave"); n++ }
         if (o.has("finalNewlineOnSave")) { finalNewline = o.getBoolean("finalNewlineOnSave"); n++ }
         if (o.has("autoClosePairs")) { pairs = parsePairs(o.getJSONArray("autoClosePairs")); n++ }

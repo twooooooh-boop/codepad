@@ -31,6 +31,9 @@ class Doc(var uri: Uri?, var name: String, val id: String = UUID.randomUUID().to
     var bom: Boolean = false
     var langOverride: Lang? = null
     var diskTime: Long = 0L
+    var indentChecked: Boolean = false
+    var indentSpaces: Boolean? = null
+    var indentSize: Int = 4
     val undo = UndoManager()
 
     val lang: Lang get() = langOverride ?: Langs.forFileName(name)
@@ -121,7 +124,12 @@ object FileIO {
     }
 
     fun write(cr: ContentResolver, uri: Uri, bytes: ByteArray) {
-        val out = cr.openOutputStream(uri, "wt") ?: throw IOException("Cannot open file for writing")
+        val first = try {
+            cr.openOutputStream(uri, "wt")
+        } catch (e: Exception) {
+            null
+        }
+        val out = first ?: cr.openOutputStream(uri, "rwt") ?: throw IOException("Cannot open file for writing")
         out.use {
             it.write(bytes)
             it.flush()

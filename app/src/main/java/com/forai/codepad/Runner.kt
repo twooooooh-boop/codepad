@@ -173,6 +173,11 @@ object SandboxRunner {
         }
     }
 
+    fun cancel() {
+        current?.destroy()
+        current = null
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     fun runJs(ctx: Context, code: String, timeoutMs: Int, onLog: (String) -> Unit, onDone: () -> Unit) {
         current?.destroy()
@@ -205,5 +210,14 @@ object SandboxRunner {
         val offset = head.count { it == '\n' }
         val html = head.replace("@@OFF@@", offset.toString()) + safe + "\n</script></body></html>"
         w.loadDataWithBaseURL("https://sandbox.codepad.local/", html, "text/html", "utf-8", null)
+        // A script stuck in an endless loop never reports back, so stop it after a grace period.
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (current === w) {
+                onLog("ERROR: the script did not finish (endless loop?) and was stopped.")
+                onDone()
+                w.destroy()
+                current = null
+            }
+        }, timeoutMs + 4000L)
     }
 }
