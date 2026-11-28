@@ -15,3 +15,7 @@ commands and scripts all come from plugins - see docs/PLUGINS.md.
 Explorer: tap the ‹ handle on the right edge (or Ctrl+B) to open a folder, create / rename / delete files and folders.
 Closing the last tab shows the welcome screen instead of creating an Untitled file.
 Binary and very large files are detected before opening (hex view / partial copy instead of freezing the editor).
+
+Large-file viewer: binary files and text files over 1 MB open in a read-only viewer that streams from disk
+(text with symbols for control bytes, or hex), so the file size can never exhaust memory. Find, Go to offset
+and "Edit" (opens up to the first 1 MB, or the whole file when it is under 4 MB) are in the viewer bar.

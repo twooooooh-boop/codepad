@@ -33,6 +33,9 @@ class Doc(var uri: Uri?, var name: String, val id: String = UUID.randomUUID().to
     var diskTime: Long = 0L
     var indentChecked: Boolean = false
     var hugeChecked: Boolean = false
+    var viewer: Boolean = false
+    var vStart: Long = 0L
+    var vHex: Boolean = false
     var forceWrap: Boolean = false
     var indentSpaces: Boolean? = null
     var indentSize: Int = 4
@@ -44,7 +47,7 @@ class Doc(var uri: Uri?, var name: String, val id: String = UUID.randomUUID().to
 
 object FileIO {
     /** Hard limit for opening a file as one piece of text. */
-    const val MAX_BYTES = 8 * 1024 * 1024
+    const val MAX_BYTES = 4 * 1024 * 1024
 
     /** Above this size we ask before opening, because the editor gets slow. */
     const val WARN_BYTES = 1024 * 1024
@@ -186,6 +189,9 @@ object FileIO {
                 while (true) {
                     val n = stream.read(buf)
                     if (n < 0) break
+                    if (mode == MODE_AUTO && total + n > WARN_BYTES) {
+                        return@use Loaded("", false, "", false, KIND_TOO_LARGE, size)
+                    }
                     if (total + n > limit) {
                         if (mode == MODE_AUTO || (mode == MODE_FORCE && !binary)) {
                             throw IOException("File is larger than " + MAX_BYTES / 1024 / 1024 + " MB")
@@ -327,6 +333,9 @@ class SessionStore(ctx: Context) {
                 o.put("cs", d.charset)
                 o.put("bom", d.bom)
                 o.put("lang", d.langOverride?.name ?: "")
+                o.put("viewer", d.viewer)
+                o.put("vstart", d.vStart)
+                o.put("vhex", d.vHex)
                 val needDraft = d.loaded && (d.uri == null || d.isModified)
                 o.put("draft", needDraft)
                 if (needDraft) {
@@ -366,6 +375,10 @@ class SessionStore(ctx: Context) {
                 d.bom = o.optBoolean("bom", false)
                 val ln = o.optString("lang", "")
                 if (ln.isNotEmpty()) d.langOverride = Langs.all.firstOrNull { it.name == ln }
+                d.viewer = o.optBoolean("viewer", false)
+                d.vStart = o.optLong("vstart", 0L)
+                d.vHex = o.optBoolean("vhex", false)
+                if (d.viewer) d.loaded = true
                 if (o.optBoolean("draft", false)) {
                     val f = File(dir, d.id + ".txt")
                     if (f.exists()) {

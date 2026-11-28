@@ -265,10 +265,10 @@ class MainActivity : AppCompatActivity() {
     private fun reloadDoc(d: Doc, uri: Uri) {
         io.execute {
             var res: FileIO.Loaded? = null
-            var err: Exception? = null
+            var err: Throwable? = null
             try {
                 res = FileIO.read(contentResolver, uri)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 err = e
             }
             val t = FileIO.lastModified(contentResolver, uri)
@@ -371,6 +371,11 @@ class MainActivity : AppCompatActivity() {
         styleButton(findViewById(R.id.ex_empty_open), true)
         findViewById<TextView>(R.id.ex_empty_text).setTextColor(t.barFg)
         explorer.applyTheme(t)
+        viewerPanel.setBackgroundColor(t.bg)
+        viewerBar.setBackgroundColor(t.bar)
+        viewerInfo.setTextColor(t.barFg)
+        for (b2 in viewerButtons) b2.setTextColor(t.barFg)
+        viewer.setTheme(t)
         refreshWelcomeRecent()
         btnNew.setColorFilter(t.barFg)
         btnOpen.setColorFilter(t.barFg)
@@ -457,6 +462,15 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ menu
 
+    private val needsEditor by lazy {
+        setOf(
+            R.id.m_save, R.id.m_save_as, R.id.m_undo, R.id.m_redo, R.id.m_find, R.id.m_goto, R.id.m_selline,
+            R.id.m_dup, R.id.m_del, R.id.m_up, R.id.m_down, R.id.m_comment, R.id.m_indent, R.id.m_unindent,
+            R.id.m_tools, R.id.m_bracket, R.id.m_outline, R.id.m_snippet, R.id.m_lang, R.id.m_enc, R.id.m_eol,
+            R.id.m_share, R.id.m_run, R.id.m_runwith
+        )
+    }
+
     private val needsDoc by lazy {
         setOf(
             R.id.m_save, R.id.m_save_as, R.id.m_undo, R.id.m_redo, R.id.m_find, R.id.m_goto, R.id.m_selline,
@@ -467,6 +481,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onMenu(id: Int): Boolean {
+        val cur0 = active
+        if (cur0 != null && cur0.viewer && id in needsEditor) {
+            when (id) {
+                R.id.m_find -> viewerFind()
+                R.id.m_goto -> viewerGoto()
+                else -> toast("Not available in the large-file viewer. Tap Edit to open part of the file.")
+            }
+            return true
+        }
         if (active == null && id in needsDoc) {
             toast("Open or create a file first")
             return true
@@ -605,7 +628,7 @@ class MainActivity : AppCompatActivity() {
             val title = v.findViewById<TextView>(R.id.tab_title)
             val close = v.findViewById<TextView>(R.id.tab_close)
             val dot = v.findViewById<View>(R.id.tab_dot)
-            val text = (if (d.isModified) "● " else "") + d.name
+            val text = (if (d.isModified) "● " else "") + d.name + (if (d.viewer) " (view)" else "")
             if (title.text.toString() != text) title.text = text
             val sel = d === cur
             val key = "" + sel + edTheme.bg
@@ -625,6 +648,11 @@ class MainActivity : AppCompatActivity() {
     private fun syncActive() {
         val d = active ?: return
         if (!d.loaded) return
+        if (d.viewer) {
+            d.vStart = viewer.currentOffset()
+            d.vHex = viewer.hexMode
+            return
+        }
         d.content = editor.buffer.toString()
         d.selStart = editor.selectionStart
         d.selEnd = editor.selectionEnd
@@ -649,6 +677,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInEditor(d: Doc) {
+        if (d.viewer) {
+            showViewer(d)
+            return
+        }
+        viewer.close()
+        viewerPanel.visibility = View.GONE
         editor.visibility = View.VISIBLE
         welcomePanel.visibility = View.GONE
         editor.undoManager = d.undo
@@ -656,7 +690,14 @@ class MainActivity : AppCompatActivity() {
         applyDocIndent(d)
         applyDocWrap(d)
         host.onLanguage(d.lang.name)
-        editor.setContent(d.content)
+        try {
+            editor.setContent(d.content)
+        } catch (e: OutOfMemoryError) {
+            editor.setContent("")
+            toast("Not enough memory to open " + d.name + " in the editor")
+            removeDoc(d)
+            return
+        }
         val len = editor.buffer.length
         editor.setSelection(d.selStart.coerceIn(0, len), d.selEnd.coerceIn(0, len))
         editor.requestFocus()
@@ -678,11 +719,11 @@ class MainActivity : AppCompatActivity() {
         status.text = "Loading…"
         io.execute {
             var res: FileIO.Loaded? = null
-            var err: Exception? = null
+            var err: Throwable? = null
             try {
                 res = FileIO.read(contentResolver, uri)
                 d.diskTime = FileIO.lastModified(contentResolver, uri)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 err = e
             }
             val r = res
@@ -698,7 +739,7 @@ class MainActivity : AppCompatActivity() {
                 } else if (r != null) {
                     val name = d.name
                     removeDoc(d)
-                    offerSpecialOpen(uri, name, r)
+                    openViewerDoc(uri, name)
                 } else {
                     toast("Can't open ${d.name}: ${e2?.message ?: "unknown error"}")
                     removeDoc(d)
@@ -790,6 +831,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveDoc(d: Doc, then: (() -> Unit)? = null) {
+        if (d.viewer) {
+            toast("The large-file viewer is read-only")
+            return
+        }
         if (d === active) syncActive()
         applySaveTransforms(d)
         val uri = d.uri
@@ -827,6 +872,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun writeDoc(d: Doc, uri: Uri, then: (() -> Unit)?, silent: Boolean = false) {
+        if (d.viewer) return
         FileIO.fixCharset(d)
         val text = d.content
         val crlf = d.crlf
@@ -835,11 +881,11 @@ class MainActivity : AppCompatActivity() {
         val ver = d.undo.version
         writesInFlight++
         io.execute {
-            var err: Exception? = null
+            var err: Throwable? = null
             try {
                 FileIO.write(contentResolver, uri, FileIO.encode(text, crlf, cs, bom))
                 d.diskTime = FileIO.lastModified(contentResolver, uri)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 err = e
             }
             val e2 = err
@@ -872,7 +918,7 @@ class MainActivity : AppCompatActivity() {
     private fun onEdited() {
         if (active == null) return
         ui.removeCallbacks(draftRunnable)
-        ui.postDelayed(draftRunnable, 4000L)
+        ui.postDelayed(draftRunnable, if (editor.buffer.length > 500_000) 30000L else 4000L)
         refreshTabs()
         updateUndoRedo()
         updateStatus()
@@ -919,6 +965,10 @@ class MainActivity : AppCompatActivity() {
         val d = active
         if (d == null) {
             status.text = ""
+            return
+        }
+        if (d.viewer) {
+            status.text = "Large-file viewer  ·  read-only"
             return
         }
         val off = max(0, editor.selectionStart)
@@ -1111,6 +1161,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.ex_empty_open).setOnClickListener { folderLauncher.launch(null) }
         editorArea.addOnLayoutChangeListener { _, l, _, r, _, _, _, _, _ -> explorer.layout(r - l) }
         editorArea.post { explorer.layout(editorArea.width) }
+        setupViewer()
         explorer.restore()
     }
 
@@ -1146,6 +1197,8 @@ class MainActivity : AppCompatActivity() {
         pendingDoc = null
         untitledCounter = 1
         rebuildTabs()
+        viewer.close()
+        viewerPanel.visibility = View.GONE
         editor.visibility = View.GONE
         welcomePanel.visibility = View.VISIBLE
         findBar.visibility = View.GONE
@@ -1231,12 +1284,22 @@ class MainActivity : AppCompatActivity() {
                     box.addView(tv)
                     return box
                 }
+                val box = LinearLayout(this@MainActivity)
+                box.orientation = LinearLayout.VERTICAL
                 val tv = TextView(this@MainActivity)
                 tv.text = (if (r.checked) "✓   " else "      ") + r.title
                 tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 tv.setTextColor(t.barFg)
                 tv.setPadding(dp(16), dp(11), dp(16), dp(11))
-                return tv
+                box.addView(tv)
+                if (position + 1 < rows.size && !rows[position + 1].header) {
+                    val line = View(this@MainActivity)
+                    line.setBackgroundColor((t.barFg and 0x00FFFFFF) or 0x24000000)
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                    lp.setMargins(dp(14), 0, dp(14), 0)
+                    box.addView(line, lp)
+                }
+                return box
             }
         }
         val pw = ListPopupWindow(this)
@@ -1270,45 +1333,186 @@ class MainActivity : AppCompatActivity() {
         else -> String.format("%.1f MB", b / 1048576.0)
     }
 
-    private fun offerSpecialOpen(uri: Uri, name: String, r: FileIO.Loaded) {
-        val sizeText = humanSize(r.size)
-        if (r.kind == FileIO.KIND_BINARY) {
-            MaterialAlertDialogBuilder(this)
-                .setTitle("Binary file")
-                .setMessage("\"" + name + "\" (" + sizeText + ") looks like a binary file such as a zip, image or compiled XML. Opening it as text can freeze the editor.")
-                .setPositiveButton("View hex") { _, _ -> openHexView(name, r) }
-                .setNeutralButton("Open as text") { _, _ -> openSpecial(uri, name, FileIO.MODE_FORCE) }
-                .setNegativeButton("Cancel", null)
-                .show()
-        } else {
-            val canFull = r.size in 0L..FileIO.MAX_BYTES.toLong()
-            val b = MaterialAlertDialogBuilder(this)
-                .setTitle("Large file")
-                .setMessage("\"" + name + "\" is " + sizeText + ". Large files make the editor slow." + (if (canFull) "" else " It is too large to open completely."))
-                .setPositiveButton("Open first 1 MB") { _, _ -> openSpecial(uri, name, FileIO.MODE_HEAD) }
-                .setNegativeButton("Cancel", null)
-            if (canFull) b.setNeutralButton("Open anyway") { _, _ -> openSpecial(uri, name, FileIO.MODE_FORCE) }
-            b.show()
+    // ---- large-file viewer
+
+    private lateinit var viewerPanel: View
+    private lateinit var viewerBar: View
+    private lateinit var viewer: LargeFileView
+    private lateinit var viewerInfo: TextView
+    private lateinit var viewerModeBtn: TextView
+    private var viewerButtons: List<TextView> = emptyList()
+    private var viewerToken = 0
+    private var lastSearch = ""
+    private var lastFound = -1L
+
+    private fun setupViewer() {
+        viewerPanel = findViewById(R.id.viewer_panel)
+        viewerBar = findViewById(R.id.viewer_bar)
+        viewer = findViewById(R.id.viewer)
+        viewerInfo = findViewById(R.id.viewer_info)
+        viewerModeBtn = findViewById(R.id.viewer_mode)
+        val vFind = findViewById<TextView>(R.id.viewer_find)
+        val vGoto = findViewById<TextView>(R.id.viewer_goto)
+        val vEdit = findViewById<TextView>(R.id.viewer_edit)
+        viewerButtons = listOf(viewerModeBtn, vFind, vGoto, vEdit)
+        viewer.onStatus = { text -> viewerInfo.text = text }
+        viewerModeBtn.setOnClickListener {
+            viewer.toggleHex()
+            updateViewerBar()
         }
+        vFind.setOnClickListener { viewerFind() }
+        vGoto.setOnClickListener { viewerGoto() }
+        vEdit.setOnClickListener { viewerEdit() }
     }
 
-    private fun openHexView(name: String, r: FileIO.Loaded) {
-        val d = Doc(null, "$name (hex)")
-        d.content = FileIO.hexDump(name, r.preview, r.size)
+    private fun updateViewerBar() {
+        viewerModeBtn.text = if (viewer.hexMode) "Text" else "Hex"
+        viewerInfo.text = viewer.statusText()
+    }
+
+    /** Opens a file in the read-only viewer: it streams from disk, so any file size is safe. */
+    private fun openViewerDoc(uri: Uri, name: String) {
+        val existing = docs.firstOrNull { it.uri == uri && it.viewer }
+        if (existing != null) {
+            activate(existing)
+            return
+        }
+        val d = Doc(uri, name)
+        d.viewer = true
         d.loaded = true
         docs.add(d)
         rebuildTabs()
         activate(d)
     }
 
+    private fun showViewer(d: Doc) {
+        editor.visibility = View.GONE
+        welcomePanel.visibility = View.GONE
+        findBar.visibility = View.GONE
+        viewerPanel.visibility = View.VISIBLE
+        viewerInfo.text = "Opening…"
+        val uri = d.uri
+        if (uri == null) {
+            toast("This viewer tab has no file")
+            removeDoc(d)
+            return
+        }
+        val token = ++viewerToken
+        io.execute {
+            var opened: LargeFile.Opened? = null
+            var err: Throwable? = null
+            try {
+                opened = LargeFile.open(this, contentResolver, uri)
+            } catch (e: Throwable) {
+                err = e
+            }
+            val o = opened
+            val e2 = err
+            ui.post {
+                if (token != viewerToken || active !== d) {
+                    if (o != null) LargeFile.release(o)
+                } else if (o == null) {
+                    toast("Can't open " + d.name + ": " + (e2?.message ?: "unknown error"))
+                    removeDoc(d)
+                } else {
+                    viewer.attach(o, d.vStart, d.vHex)
+                    updateViewerBar()
+                }
+            }
+        }
+    }
+
+    private fun viewerFind() {
+        val et = EditText(this)
+        et.setSingleLine()
+        et.hint = "Text to find"
+        et.setText(lastSearch)
+        et.selectAll()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Find in file")
+            .setView(boxed(et))
+            .setPositiveButton("Find") { _, _ -> runViewerSearch(et.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runViewerSearch(q: String) {
+        if (q.isEmpty()) return
+        val again = q == lastSearch && lastFound >= 0
+        lastSearch = q
+        val from = if (again) lastFound + 1 else viewer.currentOffset()
+        val dlg = MaterialAlertDialogBuilder(this)
+            .setTitle("Searching")
+            .setMessage("0%")
+            .setCancelable(false)
+            .setNegativeButton("Cancel") { _, _ -> viewer.cancelSearch() }
+            .show()
+        viewer.search(q, from, true, { pct -> dlg.setMessage("$pct%") }) { off ->
+            dlg.dismiss()
+            if (off < 0) {
+                toast("Not found")
+            } else {
+                lastFound = off
+                viewer.jumpTo(off)
+            }
+        }
+    }
+
+    private fun parseOffset(text: String, size: Long): Long? {
+        val t = text.trim().lowercase()
+        if (t.isEmpty()) return null
+        return try {
+            when {
+                t.endsWith("%") -> (t.dropLast(1).trim().toDouble() / 100.0 * size).toLong()
+                t.startsWith("0x") -> t.substring(2).toLong(16)
+                else -> t.toLong()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun viewerGoto() {
+        val et = EditText(this)
+        et.setSingleLine()
+        et.hint = "Offset: 1234, 0x4D2 or 50%"
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Go to")
+            .setView(boxed(et))
+            .setPositiveButton("Go") { _, _ ->
+                val off = parseOffset(et.text.toString(), viewer.fileSize)
+                if (off == null) toast("Not a valid offset") else viewer.jumpTo(off)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun viewerEdit() {
+        val d = active ?: return
+        val uri = d.uri ?: return
+        val size = viewer.fileSize
+        val full = size <= FileIO.MAX_BYTES
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Edit in the text editor")
+            .setMessage(
+                if (full) "The whole file (" + humanSize(size) + ") will be loaded into the editor. Big files can be slow."
+                else "This file is too big to edit completely. The first 1 MB opens as an editable copy; saving asks for a new file name."
+            )
+            .setPositiveButton("Open") { _, _ ->
+                openSpecial(uri, d.name, if (full) FileIO.MODE_FORCE else FileIO.MODE_HEAD)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun openSpecial(uri: Uri, name: String, mode: Int) {
         status.text = "Loading…"
         io.execute {
             var res: FileIO.Loaded? = null
-            var err: Exception? = null
+            var err: Throwable? = null
             try {
                 res = FileIO.read(contentResolver, uri, mode)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 err = e
             }
             val lm = FileIO.lastModified(contentResolver, uri)
@@ -1462,6 +1666,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         ui.removeCallbacks(draftRunnable)
         if (::host.isInitialized) host.stop()
+        if (::viewer.isInitialized) viewer.close()
         SandboxRunner.cancel()
         super.onDestroy()
     }
@@ -1714,6 +1919,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRun(d: Doc, r: RunnerDef) {
+        if (d.viewer) {
+            toast("Running isn't available in the large-file viewer")
+            return
+        }
         lastRun = Pair(d, r)
         cfg.prefs.edit().putString("runner_" + d.lang.name, r.key).apply()
         val content = d.content

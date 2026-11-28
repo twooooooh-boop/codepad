@@ -49,7 +49,7 @@ class EditorView @JvmOverloads constructor(
 
     companion object {
         private val worker = Executors.newSingleThreadExecutor()
-        const val MAX_HIGHLIGHT = 2_000_000
+        const val MAX_HIGHLIGHT = 300_000
         private const val BR_SCAN = 30_000
         private val EMPTY_F = FloatArray(0)
     }
